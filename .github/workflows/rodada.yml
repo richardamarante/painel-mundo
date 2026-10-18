@@ -1,0 +1,71 @@
+name: Rodada do Mundo
+
+# Publica a rodada nova do ICON global (DWD) no modo Mundo do Painel Nacional.
+# O DWD termina de subir cada rodada (00, 06, 12 e 18 UTC) umas 3 a 4 horas depois; o teste de rodada nova evita
+# refazer o que já está no ar.
+on:
+  schedule:
+    - cron: "40 3,9,15,21 * * *"
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Publicar mesmo que a rodada já esteja no ar"
+        type: boolean
+        default: false
+
+concurrency:
+  group: rodada-mundo
+  cancel-in-progress: false
+
+jobs:
+  rodada:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Dependências
+        run: pip install -q -r requirements.txt
+
+      - name: Há rodada nova?
+        id: teste
+        run: python rodada_nova.py
+
+      - name: Espaço em disco
+        if: steps.teste.outputs.nova == 'true' || inputs.forcar
+        run: |
+          sudo mkdir -p /mnt/mundo && sudo chown "$USER" /mnt/mundo
+          df -h / /mnt
+
+      - name: Pesos de remapeamento (cache)
+        if: steps.teste.outputs.nova == 'true' || inputs.forcar
+        uses: actions/cache@v4
+        with:
+          path: /mnt/mundo/cache/pesos-0125.npz
+          key: pesos-icon-0125-v1
+
+      - name: Baixar e gerar
+        if: steps.teste.outputs.nova == 'true' || inputs.forcar
+        run: >
+          python gerar.py
+          --rodada ${{ steps.teste.outputs.rodada }}
+          --saida /mnt/mundo/dados
+          --cache /mnt/mundo/cache
+          --formato webp
+          --jobs 4
+          --conexoes 16
+          --limpar-cache
+
+      - name: Publicar no R2
+        if: steps.teste.outputs.nova == 'true' || inputs.forcar
+        run: python enviar.py --saida /mnt/mundo/dados
