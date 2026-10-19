@@ -66,6 +66,10 @@ jobs:
           --conexoes 16
           --limpar-cache
 
+      - name: Testes do histórico
+        if: steps.teste.outputs.nova == 'true' || inputs.forcar
+        run: python -m unittest test_historico
+
       - name: Publicar no R2
         if: steps.teste.outputs.nova == 'true' || inputs.forcar
         run: python enviar.py --saida /mnt/mundo/dados

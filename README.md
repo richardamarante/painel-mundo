@@ -13,7 +13,40 @@ cada rodada (00, 06, 12 e 18 UTC), e só trabalha quando há rodada nova. Para r
 | --- | --- |
 | `gerar.py` | baixa os GRIB do DWD, remapeia e grava os quadros (WebP sem perda) e o manifesto |
 | `rodada_nova.py` | compara a rodada mais recente do DWD com a que o site já mostra |
-| `enviar.py` | envia a rodada ao R2, o manifesto por último, e deixa só as duas rodadas mais recentes |
+| `enviar.py` | envia a rodada ao R2, atualiza o histórico, manda o manifesto por último e deixa só as duas rodadas mais recentes |
+| `historico.py` | o passado do modo: horas 1 a 6 de cada rodada que saiu de cena, quadro diário (média, 0,5°) e o trecho de cada um no manifesto |
+| `test_historico.py` | testes do histórico e do fluxo do `enviar.py` com um R2 de mentira: `python -m unittest test_historico` |
+
+## Passado e previsão numa série só
+
+A rodada atual é a previsão (`mundo/<rodada>/<camada>/<hhh>.webp`). O passado vem das rodadas que saem de cena: a cada
+publicação, as horas **1 a 6** de cada rodada anterior (as seis horas até a rodada seguinte, sem buraco) são copiadas,
+dentro do R2 e sem subir nada de novo, para chaves organizadas por dia:
+
+```
+mundo/historico/AAAA/MM/DD/<camada>/HH.webp    uma hora, na grade da previsão (0,125°)
+mundo/historico/AAAA/MM/DD/<camada>/dia.webp   o dia inteiro, média do dia em 0,5° (com --compactar)
+```
+
+Horas 1 a 6 e não 0 a 5 porque a chuva é a diferença de dois acumulados e a hora 0 sai zerada, o que piscaria a chuva a
+cada 6 horas. O DWD só guarda cerca de um dia de rodadas, então não há como preencher o passado de trás para frente: o
+histórico cresce 6 horas a cada rodada publicada (7 dias levam uma semana).
+
+O `manifest.json` (versão 2) mantém os campos da versão 1 (a previsão) e ganha `serie.trechos`, do mais antigo ao mais
+novo, cada um com `passo_h`, `inicio` e `fim`, `grade` (se for diferente da do manifesto), `formato`, `url` (modelo
+relativo à base, com `{aaaa} {mm} {dd} {camada} {hh}`) e `lacunas` (intervalos sem quadro). Um trecho novo, com outra
+grade ou outro passo (a reanálise ERA5 diária de 0,5° de 2015 em diante, por exemplo), entra sem mudar o cliente, e o
+manifesto não cresce com a quantidade de quadros: cada trecho é uma regra, não uma lista.
+
+Opções do `enviar.py` (nenhuma é usada no fluxo do GitHub por enquanto, então **nada do histórico é apagado**):
+
+* `--compactar` grava o quadro diário dos dias encerrados (média do dia no valor físico; rajada pelo máximo; chuva pela
+  taxa média);
+* `--podar-horario-dias N` apaga os quadros horários com mais de N dias, só dos dias que já têm o quadro diário;
+* `--sem-historico` publica como antes, sem `serie`.
+
+Espaço: uma hora de todas as camadas ocupa cerca de 13 MB (WebP sem perda), ou seja 310 MB por dia e 2,2 GB para 7 dias
+horários; o quadro diário de 0,5° pesa cerca de 1/16 do horário. Sem poda, o horário cresce 9 GB por mês.
 
 Variáveis: vento a 10 m (com rajada), temperatura, sensação térmica, ponto de orvalho e umidade a 2 m, chuva (com
 neve), altura da neve, nuvens, pressão ao nível do mar, água precipitável e CAPE.
