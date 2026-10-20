@@ -15,6 +15,9 @@ cada rodada (00, 06, 12 e 18 UTC), e só trabalha quando há rodada nova. Para r
 | `rodada_nova.py` | compara a rodada mais recente do DWD com a que o site já mostra |
 | `enviar.py` | envia a rodada ao R2, atualiza o histórico, manda o manifesto por último e deixa só as duas rodadas mais recentes |
 | `historico.py` | o passado do modo: horas 1 a 6 de cada rodada que saiu de cena, quadro diário (média, 0,5°) e o trecho de cada um no manifesto |
+| `arquivo.py` | formato PNA1 do arquivo horário no Hugging Face: um `.bin` por camada e mês, índice no começo |
+| `arquivo_lote.py` | gera o arquivo horário em pedaços de 4 rodadas (um job cada) e junta o mês (`.github/workflows/arquivo.yml`) |
+| `lotes.py` | lista os lotes do passado, do mais novo para o mais antigo, com a estimativa de tempo, e dispara (`--disparar`) |
 | `test_historico.py` | testes do histórico e do fluxo do `enviar.py` com um R2 de mentira: `python -m unittest test_historico` |
 
 ## Passado e previsão numa série só
@@ -53,4 +56,12 @@ neve), altura da neve, nuvens, pressão ao nível do mar, água precipitável e 
 
 **Dados:** DWD (ICON), [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), <https://opendata.dwd.de/>.
 
-Segredos do repositório: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
+## Arquivo horário no Hugging Face
+
+O passado de 0,125° hora a hora vai para o dataset público `richardmelo/painel-nacional-icon`, em
+`<camada>/<AAAA>/<AAAA-MM>.bin` (formato em `arquivo.py`) e `meses/<AAAA-MM>.json`. O workflow **Arquivo horário**
+corta cada mês em pedaços de 4 rodadas (um dia), um job por pedaço, até 20 ao mesmo tempo e 256 por disparo (8 meses).
+Cada job baixa os GRIB das suas rodadas de uma vez e faz uma rodada por núcleo; os quadros sobem como artefato, e um
+job por mês junta tudo e envia. O quadro é o do `gerar.py`, byte a byte (`--conferir` compara uma rodada por mês).
+
+Segredos do repositório: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `HF_TOKEN`.

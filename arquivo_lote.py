@@ -178,7 +178,7 @@ def _rodada_inteira(args: tuple) -> dict:
             del _MEMO[c]
         t1 = time.perf_counter()
         gerar.processar_passo((cache, saida, rodada, h, anterior[h], list(gerar.CAMADAS), formato))
-        _T["passos"] += time.perf_counter() - t1
+        _T["total"] += time.perf_counter() - t1
     _MEMO.clear()
     return {"rodada": rodada, "passos": passos, "segundos": time.perf_counter() - t0, **{k: round(v, 1) for k, v in _T.items()}}
 
@@ -245,7 +245,7 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
 
     for r in passos:
         shutil.rmtree(os.path.join(cache, r), ignore_errors=True)
-    soma = {k: round(sum(m.get(k, 0) for m in medidas), 1) for k in ("bz2", "grib", "remap", "webp", "passos")}
+    soma = {k: round(sum(m.get(k, 0) for m in medidas), 1) for k in ("bz2", "grib", "remap", "webp", "total")}
     info = {
         "mes": a.mes,
         "rodadas": list(passos),
@@ -334,7 +334,7 @@ def juntar(a: argparse.Namespace) -> None:
             if c in por_hora[k]:
                 os.remove(por_hora[k][c])
 
-    cpu = {k: round(sum(p["cpu_por_etapa"].get(k, 0) for p in partes)) for k in ("bz2", "grib", "remap", "webp", "passos")}
+    cpu = {k: round(sum(p["cpu_por_etapa"].get(k, 0) for p in partes)) for k in ("bz2", "grib", "remap", "webp", "total")}
     info = {
         "mes": a.mes,
         "formato": "pna1",
