@@ -34,10 +34,19 @@ import time
 import arquivo
 import arquivo_mes  # troca gerar.url_do pelo espelho do source.coop
 import gerar
+import ocf  # rodadas de 21/03/2023 a 12/08/2025: arquivo zarr da Open Climate Fix
 
 HORAS = arquivo_mes.HORAS
 UTC = dt.timezone.utc
 MAX_MATRIZ = 256
+# WebP sem perda do arquivo: method=0 e quality=0 (o esforço do modo sem perda). Os pixels decodificados são os mesmos
+# do method=4 do gerar.py, só o arquivo muda: medido numa hora das 11 camadas, 2,0 s e 22,2 MB contra 21,4 s e 13,3 MB
+# (method=1 quality=0: 7,6 s e 15,6 MB). A conferência compara os códigos decodificados, não os bytes.
+WEBP_METODO, WEBP_QUALIDADE = 0, 0
+
+
+def fonte(rodada: str) -> str:
+    return "ocf" if ocf.cobre(rodada) else "icon"
 
 
 def faixa_do_mes(mes: str) -> tuple[int, int, dt.datetime, dt.datetime]:
@@ -114,6 +123,12 @@ def _ler_grib_medido(caminho: str):
     if caminho in _MEMO:
         return _MEMO[caminho][1]
     t0 = time.perf_counter()
+    if os.path.exists(ocf.caminho_npy(caminho)):  # campo da OCF (float32), de volta ao float64 do eccodes
+        v = ocf.ler_npy(ocf.caminho_npy(caminho))
+        _T["ocf"] += time.perf_counter() - t0
+        v.flags.writeable = False
+        _MEMO[caminho] = (_passo_do_caminho(caminho), v, None)
+        return v
     with open(caminho, "rb") as f:
         bruto = bz2.decompress(f.read())
     t1 = time.perf_counter()
@@ -150,9 +165,22 @@ class _RemapMemo:
         return g
 
 
+def gravar_webp_rapido(rgb, destino, formato):
+    """O gerar.gravar_imagem com o WebP sem perda mais rápido (mesmos pixels, arquivo maior)."""
+    if formato != "webp":
+        return _gravar_original(rgb, destino, formato)
+    from PIL import Image
+
+    os.makedirs(os.path.dirname(destino), exist_ok=True)
+    tmp = destino + ".tmp"
+    Image.fromarray(rgb, "RGB").save(tmp, format="WEBP", lossless=True, quality=WEBP_QUALIDADE, method=WEBP_METODO)
+    os.replace(tmp, destino)
+    return os.path.getsize(destino)
+
+
 def _gravar_imagem_medido(rgb, destino, formato):
     t0 = time.perf_counter()
-    n = _gravar_original(rgb, destino, formato)
+    n = gravar_webp_rapido(rgb, destino, formato)
     _T["webp"] += time.perf_counter() - t0
     return n
 
@@ -181,7 +209,9 @@ def _rodada_inteira(args: tuple) -> dict:
         gerar.processar_passo((cache, saida, rodada, h, anterior[h], list(gerar.CAMADAS), formato))
         _T["total"] += time.perf_counter() - t1
     _MEMO.clear()
-    return {"rodada": rodada, "passos": passos, "segundos": time.perf_counter() - t0, **{k: round(v, 1) for k, v in _T.items()}}
+    inexatos = ocf.CONTADORES["inexatos"]
+    ocf.CONTADORES.update(exatos=0, inexatos=0, constantes=0)
+    return {"rodada": rodada, "passos": passos, "segundos": time.perf_counter() - t0, "ocf_inexatos": inexatos, **{k: round(v, 1) for k, v in _T.items()}}
 
 
 def arquivos_da_rodada(rodada: str, passos: list[int]) -> tuple[list[tuple[str, int]], dict[int, int | None]]:
@@ -209,26 +239,54 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
     rodadas = [r for r in a.rodadas.split(",") if r]
     t0 = time.time()
 
-    # 1. quais rodadas têm cópia (HEAD do último passo de cada uma)
+    # 1. quais rodadas têm cópia (HEAD do último passo de cada uma, ou do zarr.zip da OCF)
     passos = {r: passos_no_mes(r, inicio, fim) for r in rodadas}
     passos = {r: p for r, p in passos.items() if p}
+
+    def tem_copia(r: str) -> bool:
+        if fonte(r) == "ocf":
+            return ocf.tamanho(ocf.url_rodada(r)) > 1 << 30  # os buracos da OCF têm zips de 0 byte
+        return arquivo_mes.existe(gerar.url_do("t_2m", r, max(passos[r])))
+
     with cf.ThreadPoolExecutor(8) as ex:
-        tem = dict(zip(passos, ex.map(lambda r: arquivo_mes.existe(gerar.url_do("t_2m", r, max(passos[r]))), passos)))
+        tem = dict(zip(passos, ex.map(tem_copia, passos)))
     sem_copia = [r for r in passos if not tem[r]]
     passos = {r: p for r, p in passos.items() if tem[r]}
 
-    # 2. todos os GRIB do pedaço de uma vez
-    tarefas, baixar = [], []
+    # 2. todos os campos do pedaço de uma vez (GRIB do espelho, ou blocos do zarr da OCF por faixa)
+    tarefas, baixar, da_ocf = [], [], {}
     for r, ps in passos.items():
         faltam, anterior = arquivos_da_rodada(r, ps)
-        baixar += [(gerar.url_do(v, r, h), gerar.caminho_cache(cache, r, v, h)) for v, h in faltam]
+        if fonte(r) == "ocf":
+            da_ocf[r] = faltam
+        else:
+            baixar += [(gerar.url_do(v, r, h), gerar.caminho_cache(cache, r, v, h)) for v, h in faltam]
         tarefas.append((cache, saida, r, ps, anterior, "webp"))
     t1 = time.time()
+    mb_ocf = 0.0
+
+    def baixar_ocf(r: str) -> float:
+        try:
+            return ocf.baixar_rodada(r, da_ocf[r], cache, gerar.caminho_cache, conexoes=max(4, a.conexoes // max(1, len(da_ocf)))) / 1e6
+        except FileNotFoundError:
+            return -1.0
+
     with cf.ThreadPoolExecutor(a.conexoes) as ex:
-        list(ex.map(lambda x: gerar.baixar(*x), baixar))
-    mb = sum(os.path.getsize(d) for _, d in baixar) / 1e6
+        fut = [ex.submit(gerar.baixar, *x) for x in baixar]
+        with cf.ThreadPoolExecutor(max(1, len(da_ocf))) as ex2:
+            for r, n in zip(list(da_ocf), ex2.map(baixar_ocf, list(da_ocf))):
+                if n < 0:  # o zip sumiu entre o HEAD e a leitura
+                    sem_copia.append(r)
+                    del passos[r]
+                    tarefas = [t for t in tarefas if t[2] != r]
+                else:
+                    mb_ocf += n
+        for f in fut:
+            f.result()
+    mb = sum(os.path.getsize(d) for _, d in baixar) / 1e6 + mb_ocf
     t_baixar = time.time() - t1
-    print(f"{len(baixar)} GRIB ({mb:.0f} MB) em {t_baixar:.0f} s, {len(passos)} rodadas, sem cópia: {sem_copia or 'nenhuma'}", flush=True)
+    print(f"{len(baixar)} GRIB e {sum(len(v) for v in da_ocf.values())} campos da OCF ({mb:.0f} MB) em {t_baixar:.0f} s, "
+          f"{len(passos)} rodadas, sem cópia: {sem_copia or 'nenhuma'}", flush=True)
 
     # 3. uma rodada por trabalhador
     t2 = time.time()
@@ -237,7 +295,8 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
         for m in ex.map(_rodada_inteira, tarefas):
             medidas.append(m)
             print(f"  {m['rodada']}: {len(m['passos'])} passos em {m['segundos']:.0f} s "
-                  f"(bz2 {m.get('bz2', 0)}, grib {m.get('grib', 0)}, remap {m.get('remap', 0)}, webp {m.get('webp', 0)})", flush=True)
+                  f"(bz2 {m.get('bz2', 0)}, grib {m.get('grib', 0)}, ocf {m.get('ocf', 0)}, remap {m.get('remap', 0)}, "
+                  f"webp {m.get('webp', 0)}; campos da OCF inexatos: {m['ocf_inexatos']})", flush=True)
     t_proc = time.time() - t2
 
     conferencia = None
@@ -246,11 +305,14 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
 
     for r in passos:
         shutil.rmtree(os.path.join(cache, r), ignore_errors=True)
-    soma = {k: round(sum(m.get(k, 0) for m in medidas), 1) for k in ("bz2", "grib", "remap", "webp", "total")}
+    soma = {k: round(sum(m.get(k, 0) for m in medidas), 1) for k in ("bz2", "grib", "ocf", "remap", "webp", "total")}
     info = {
         "mes": a.mes,
         "rodadas": list(passos),
+        "fontes": {r: fonte(r) for r in passos},
         "rodadas_sem_copia": sem_copia,
+        "ocf_campos_inexatos": sum(m["ocf_inexatos"] for m in medidas),
+        "webp": {"method": WEBP_METODO, "quality": WEBP_QUALIDADE},
         "grib": len(baixar),
         "mb_baixados": round(mb),
         "segundos_baixando": round(t_baixar, 1),
@@ -264,6 +326,8 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
     with open(os.path.join(a.trabalho, "parte", "partes", nome), "w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False, indent=1)
     print(json.dumps(info, ensure_ascii=False), flush=True)
+    if info["ocf_campos_inexatos"]:
+        print(f"aviso: {info['ocf_campos_inexatos']} campos da OCF não voltaram exatos ao float64 do GRIB", flush=True)
     if conferencia and conferencia["diferentes"]:
         raise SystemExit(f"quadros diferentes do gerar.py: {conferencia['diferentes'][:5]}")
 
@@ -273,29 +337,45 @@ def _sha(caminho: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
+def _pixels(caminho: str):
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(caminho) as im:
+        return np.asarray(im.convert("RGB"))
+
+
 def conferir(rodada: str, passos: list[int], cache: str, saida: str, trabalho: str) -> dict:
-    """Gera a rodada de novo pelo caminho de hoje (gerar.baixar_e_processar, num processo limpo) e compara os bytes."""
+    """Gera a rodada de novo pelo caminho de hoje (gerar.baixar_e_processar, num processo limpo) e compara os quadros.
+
+    O gerar.py grava com method=4 e o arquivo com o WebP rápido: a comparação é dos pixels decodificados (os códigos),
+    e `bytes_iguais` conta os que também batem byte a byte. Rodada da OCF: o processo limpo lê o mesmo campo da OCF
+    pelo `ocf.instalar()`, sem a memória de campos nem o trabalhador do arquivo_lote."""
     import subprocess
 
     ref = os.path.join(trabalho, "referencia")
     codigo = (
-        "import sys, argparse; sys.path.insert(0, sys.argv[1]); import arquivo_mes, gerar; "
+        "import sys, argparse, multiprocessing as mp; sys.path.insert(0, sys.argv[1]); import arquivo_mes, gerar, ocf; ocf.instalar(); "
+        "sys.platform != 'win32' and mp.set_start_method('fork', force=True); "
         "ns = argparse.Namespace(cache=sys.argv[2], saida=sys.argv[3], formato='webp', jobs=4, conexoes=16); "
         "gerar.baixar_e_processar(ns, sys.argv[4], list(gerar.CAMADAS), [int(x) for x in sys.argv[5].split(',')])"
     )
     t0 = time.time()
     subprocess.run([sys.executable, "-c", codigo, os.path.dirname(os.path.abspath(__file__)), cache, ref, rodada, ",".join(map(str, passos))], check=True)
-    iguais, diferentes = 0, []
+    iguais, bytes_iguais, diferentes, tam, tam_ref = 0, 0, [], 0, 0
     for c in gerar.CAMADAS:
         for h in passos:
             nome = f"{h:03d}.webp"
             p1, p2 = os.path.join(saida, rodada, c, nome), os.path.join(ref, rodada, c, nome)
-            if os.path.exists(p1) and os.path.exists(p2) and _sha(p1) == _sha(p2):
+            if os.path.exists(p1) and os.path.exists(p2) and (_pixels(p1) == _pixels(p2)).all():
                 iguais += 1
+                bytes_iguais += _sha(p1) == _sha(p2)
+                tam, tam_ref = tam + os.path.getsize(p1), tam_ref + os.path.getsize(p2)
             else:
                 diferentes.append(f"{c}/{nome}")
     shutil.rmtree(ref, ignore_errors=True)
-    r = {"rodada": rodada, "quadros_iguais": iguais, "diferentes": diferentes, "segundos": round(time.time() - t0)}
+    r = {"rodada": rodada, "fonte": fonte(rodada), "quadros_iguais": iguais, "bytes_iguais": bytes_iguais, "diferentes": diferentes,
+         "bytes_arquivo": tam, "bytes_gerar_py": tam_ref, "segundos": round(time.time() - t0)}
     print(f"conferência contra o gerar.py: {r}", flush=True)
     return r
 
@@ -313,6 +393,7 @@ def juntar(a: argparse.Namespace) -> None:
             partes.append(json.load(f))
     camadas = list(gerar.CAMADAS)
     por_hora: dict[int, dict[str, str]] = {}
+    origem_da_hora: dict[int, int] = {}
     for rodada in sorted(os.listdir(quadros)) if os.path.isdir(quadros) else []:
         r = dt.datetime.strptime(rodada, "%Y%m%d%H").replace(tzinfo=UTC)
         for h in HORAS:
@@ -324,26 +405,34 @@ def juntar(a: argparse.Namespace) -> None:
                 p = os.path.join(quadros, rodada, c, f"{h:03d}.webp")
                 if os.path.exists(p):
                     por_hora.setdefault(k, {})[c] = p
+                    origem_da_hora[k] = arquivo.ORIGEM_OCF if fonte(rodada) == "ocf" else arquivo.ORIGEM_ICON
     horas_ok = sorted(k for k, cs in por_hora.items() if len(cs) == len(camadas))
 
     saida = os.path.join(a.trabalho, "saida")
     tamanhos: dict[str, int] = {}
     for c in camadas:
         destino = os.path.join(saida, arquivo.caminho_no_repo(c, ano, m))
-        tamanhos[c] = arquivo.gravar(destino, c, ano, m, {k: (por_hora[k][c], arquivo.ORIGEM_ICON) for k in horas_ok})
+        tamanhos[c] = arquivo.gravar(destino, c, ano, m, {k: (por_hora[k][c], origem_da_hora[k]) for k in horas_ok})
         for k in por_hora:  # libera o disco camada a camada
             if c in por_hora[k]:
                 os.remove(por_hora[k][c])
 
-    cpu = {k: round(sum(p["cpu_por_etapa"].get(k, 0) for p in partes)) for k in ("bz2", "grib", "remap", "webp", "total")}
+    cpu = {k: round(sum(p["cpu_por_etapa"].get(k, 0) for p in partes)) for k in ("bz2", "grib", "ocf", "remap", "webp", "total")}
+    fontes = sorted({f for p in partes for f in p.get("fontes", {}).values()})
+    origem = {
+        "icon": "ICON global operacional (DWD), cópias do opendata no source.coop (bkr/icon)",
+        "ocf": "ICON global operacional (DWD), arquivo zarr da Open Climate Fix (cópia no source.coop, bkr/icon/icon)",
+    }
     info = {
         "mes": a.mes,
         "formato": "pna1",
         "quadros": "webp",
-        "origem": "ICON global operacional (DWD), cópias do opendata no source.coop (bkr/icon), horas 1 a 6 de cada rodada",
+        "origem": "; ".join(origem[f] for f in fontes) + ", horas 1 a 6 de cada rodada",
         "horas_no_mes": n,
         "horas": horas_ok,
         "rodadas_sem_copia": sorted(r for p in partes for r in p["rodadas_sem_copia"]),
+        "ocf_campos_inexatos": sum(p.get("ocf_campos_inexatos", 0) for p in partes),
+        "webp": sorted({json.dumps(p.get("webp", {"method": 4, "quality": 100})) for p in partes}),
         "bytes": tamanhos,
         "bytes_total": sum(tamanhos.values()),
         "pedacos": len(partes),
@@ -368,7 +457,7 @@ def juntar(a: argparse.Namespace) -> None:
         for k in range(6):
             try:
                 t1 = time.time()
-                api.upload_folder(repo_id=a.enviar, repo_type="dataset", folder_path=saida, commit_message=f"{a.mes}: ICON operacional")
+                api.upload_folder(repo_id=a.enviar, repo_type="dataset", folder_path=saida, commit_message=f"{a.mes}: ICON operacional ({', '.join(fontes)})")
                 print(f"enviado em {time.time() - t1:.0f} s", flush=True)
                 break
             except Exception as e:  # commits de vários meses ao mesmo tempo, ou o HF ocupado
