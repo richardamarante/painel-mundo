@@ -29,8 +29,8 @@ def main() -> None:
     ap.add_argument("--de", default=PRIMEIRO_MES_RAW)
     ap.add_argument("--ate", default="", help="último mês (padrão: o mês passado)")
     ap.add_argument("--por-lote", type=int, default=MESES_POR_LOTE)
-    ap.add_argument("--min-por-job", type=float, default=6.0, help="minutos de um pedaço, medidos no 2026-09")
-    ap.add_argument("--min-juntar", type=float, default=12.0, help="minutos do job que junta e envia um mês")
+    ap.add_argument("--min-por-job", type=float, default=4.7, help="minutos de um pedaço (job inteiro), medidos no 2026-09")
+    ap.add_argument("--min-juntar", type=float, default=2.5, help="minutos do job que junta e envia um mês, medidos no 2026-09")
     ap.add_argument("--disparar", action="store_true")
     ap.add_argument("--so", type=int, default=0, help="dispara só os N primeiros lotes")
     ap.add_argument("--repo", default="richardamarante/painel-mundo")
@@ -49,6 +49,8 @@ def main() -> None:
     print(f"total: {len(meses)} meses em {len(lotes)} lotes, ~{total / 60:.1f} h de relógio")
     if not a.disparar:
         return
+    if a.de < PRIMEIRO_MES_RAW:
+        raise SystemExit(f"antes de {PRIMEIRO_MES_RAW} não há cópia no source.coop e o arquivo_lote.py ainda não lê OCF nem DREAM: a estimativa vale, o disparo não")
     for lote in lotes[: a.so or None]:
         intervalo = f"{lote[-1]}..{lote[0]}"
         for k in range(8):
