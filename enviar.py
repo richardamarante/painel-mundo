@@ -88,6 +88,14 @@ def atualizar_historico(s3, a, manifesto: dict, rodada: str) -> None:
 
     manifesto["versao"] = 2
     manifesto["serie"] = historico.serie_do_manifesto(existentes, camadas, formato)
+    if getattr(a, "arquivo_hf", ""):
+        # o passado horário de 0,125 grau que não cabe no R2 (arquivo.py); se o HF não responder, a rodada sai sem ele
+        try:
+            t = historico.trecho_do_arquivo(historico.ler_meses_do_hf(a.arquivo_hf), historico.url_do_arquivo_hf(a.arquivo_hf), formato)
+            if t:
+                manifesto["serie"]["trechos"].append(t)
+        except Exception as e:
+            print(f"arquivo do HF fora do manifesto: {e}", flush=True)
     with open(os.path.join(a.saida, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(manifesto, f, ensure_ascii=False, indent=1)
     for t in manifesto["serie"]["trechos"]:
@@ -101,6 +109,7 @@ def main() -> None:
     ap.add_argument("--prefixo", default="mundo")
     ap.add_argument("--manter", type=int, default=2, help="quantas rodadas ficam no bucket")
     ap.add_argument("--paralelo", type=int, default=16)
+    ap.add_argument("--arquivo-hf", default=historico.ARQUIVO_HF, help="dataset do HF com o arquivo horário ('' = sem ele)")
     ap.add_argument("--sem-historico", action="store_true", help="não mexe no histórico e não põe `serie` no manifesto")
     ap.add_argument("--compactar", action="store_true", help="grava o quadro diário (média do dia, 0,5 grau) dos dias encerrados")
     ap.add_argument("--podar-horario-dias", type=int, default=0, help="apaga os quadros horários com mais de N dias que já têm quadro diário (0 = nunca)")

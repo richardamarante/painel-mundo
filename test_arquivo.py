@@ -30,5 +30,16 @@ class TestArquivo(unittest.TestCase):
             self.assertEqual(struct.calcsize("<4sHHHBB16s36x"), arquivo.TAM_FIXO)
 
 
+class TestTrechoDoArquivo(unittest.TestCase):
+    def test_trecho_com_lacuna(self):
+        import historico
+
+        t = historico.trecho_do_arquivo([{"mes": "2026-09", "horas": [0, 1, 3]}, {"mes": "2026-10", "horas": [0]}], "u/{camada}")
+        self.assertEqual((t["inicio"], t["fim"], t["arquivo"], t["passo_h"]), ("2026-09-01T00:00:00Z", "2026-10-01T00:00:00Z", "pna1", 1))
+        self.assertEqual(t["lacunas"][0], ["2026-09-01T02:00:00Z", "2026-09-01T02:00:00Z"])
+        self.assertEqual(t["lacunas"][1], ["2026-09-01T04:00:00Z", "2026-09-30T23:00:00Z"])
+        self.assertIsNone(historico.trecho_do_arquivo([], "u"))
+
+
 if __name__ == "__main__":
     unittest.main()

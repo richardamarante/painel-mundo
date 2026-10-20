@@ -309,3 +309,53 @@ def compactar_dia(s3, bucket: str, prefixo: str, dia: dt.date, camadas: list[str
         s3.put_object(Bucket=bucket, Key=chave_diaria(prefixo, dia, c, formato), Body=corpo, ContentType=tipo)
         n += 1
     return n
+
+
+# --- arquivo horário no Hugging Face (arquivo.py) -------------------------------------------------------------
+
+ARQUIVO_HF = "richardmelo/painel-nacional-icon"
+
+
+def url_do_arquivo_hf(repo: str = ARQUIVO_HF) -> str:
+    return f"https://huggingface.co/datasets/{repo}/resolve/main/" + "{camada}/{aaaa}/{aaaa}-{mm}.bin"
+
+
+def ler_meses_do_hf(repo: str = ARQUIVO_HF, tempo: int = 30) -> list[dict]:
+    """Os `meses/<AAAA-MM>.json` do dataset (público: sem token)."""
+    import json
+    import urllib.request
+
+    with urllib.request.urlopen(f"https://huggingface.co/api/datasets/{repo}/tree/main/meses", timeout=tempo) as r:
+        arquivos = [x["path"] for x in json.load(r) if x.get("path", "").endswith(".json")]
+    saida = []
+    for caminho in sorted(arquivos):
+        with urllib.request.urlopen(f"https://huggingface.co/datasets/{repo}/resolve/main/{caminho}", timeout=tempo) as r:
+            saida.append(json.load(r))
+    return saida
+
+
+def trecho_do_arquivo(meses: list[dict], url: str, formato: str = "webp") -> dict | None:
+    """
+    Trecho do manifesto para o arquivo horário: um só, do primeiro ao último instante com quadro em todos os meses, com
+    as horas que faltam em `lacunas`. Vai no fim de `serie.trechos`: onde ele cruza com o horário do R2, o do R2 vence
+    (no empate de passo o cliente fica com o primeiro trecho), que sai num pedido só e já está no cache do navegador.
+    """
+    instantes: set[dt.datetime] = set()
+    for m in meses:
+        ano, mes = map(int, m["mes"].split("-"))
+        inicio = dt.datetime(ano, mes, 1, tzinfo=UTC)
+        instantes |= {inicio + dt.timedelta(hours=h) for h in m.get("horas", [])}
+    if not instantes:
+        return None
+    horas = sorted(instantes)
+    esperados = [horas[0] + dt.timedelta(hours=i) for i in range(int((horas[-1] - horas[0]).total_seconds() // 3600) + 1)]
+    return {
+        "id": "arquivo",
+        "passo_h": 1,
+        "inicio": iso(horas[0]),
+        "fim": iso(horas[-1]),
+        "formato": formato,
+        "arquivo": "pna1",
+        "url": url,
+        "lacunas": _lacunas(esperados, instantes),
+    }
