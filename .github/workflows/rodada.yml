@@ -72,4 +72,4 @@ jobs:
 
       - name: Publicar no R2
         if: steps.teste.outputs.nova == 'true' || inputs.forcar
-        run: python enviar.py --saida /mnt/mundo/dados
+        run: python enviar.py --saida /mnt/mundo/dados --arquivo-hf richardmelo/painel-nacional-icon
