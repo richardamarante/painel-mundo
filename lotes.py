@@ -36,7 +36,7 @@ def main() -> None:
     ap.add_argument("--por-lote", type=int, default=MESES_POR_LOTE)
     ap.add_argument("--min-por-job", type=float, default=4.7, help="minutos de um pedaço (job inteiro), medidos no 2026-09")
     ap.add_argument("--min-por-job-ocf", type=float, default=4.7, help="minutos de um pedaço da OCF (2 GB por rodada)")
-    ap.add_argument("--min-por-job-dream", type=float, default=4.7, help="minutos de um pedaço da DREAM (medir no 2019-01)")
+    ap.add_argument("--min-por-job-dream", type=float, default=4.7, help="minutos de um pedaço da DREAM, medidos no 2019-01 (2,3 a 8 min; o download domina)")
     ap.add_argument("--min-juntar", type=float, default=2.5, help="minutos do job que junta e envia um mês, medidos no 2026-09")
     ap.add_argument("--disparar", action="store_true")
     ap.add_argument("--so", type=int, default=0, help="dispara só os N primeiros lotes")
