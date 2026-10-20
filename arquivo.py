@@ -42,6 +42,7 @@ ORIGEM_NENHUMA = 0
 ORIGEM_ICON = 1  # ICON global operacional do DWD (cópias do opendata no source.coop, bkr/icon)
 ORIGEM_OCF = 2  # ICON global operacional, arquivo zarr da Open Climate Fix
 ORIGEM_DREAM = 3  # ICON-DREAM global (reanálise do DWD)
+ORIGEM_ERA5 = 4  # ERA5 do ECMWF (cópia ARCO-ERA5 do Google): agua, cape e neve nas horas da DREAM (era5.py)
 
 UTC = dt.timezone.utc
 

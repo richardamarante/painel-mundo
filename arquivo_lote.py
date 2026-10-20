@@ -32,6 +32,7 @@ import sys
 import time
 
 import arquivo
+import era5  # agua, cape e neve das horas da DREAM (o juntar não apaga)
 import arquivo_mes  # troca gerar.url_do pelo espelho do source.coop
 import gerar
 import leitor_dream as dream  # 2015-01 a 20/03/2023 e 13/08/2025 a 11/03/2026: reanálise ICON-DREAM do DWD
@@ -532,6 +533,31 @@ def conferir_dream(cache: str, trabalho: str, jobs: int, rodada: str = REF_DREAM
 # --- juntar ---------------------------------------------------------------------------------------------------
 
 
+def manter_era5(camada: str, ano: int, m: int, novos: dict[int, tuple[str, int]], pasta: str, repo: str) -> tuple[dict, bool]:
+    """agua, cape e neve das horas da DREAM vêm do ERA5 (era5.py, origem 4), que roda depois do lote. Se o lote do mês
+    rodar de novo, o juntar não pode trocar esses quadros por vazio: as horas de origem 4 que o .bin do HF já tem e que
+    o lote não gerou continuam lá (o quadro é copiado byte a byte). Devolve (quadros, pular): pular = True quando o lote
+    não tem nenhum quadro da camada e o HF já tem ERA5, e aí o .bin do HF fica intacto."""
+    base = f"https://huggingface.co/datasets/{repo}/resolve/main"
+    idx = era5.indice_hf(camada, ano, m, base)
+    if not idx:
+        return novos, False
+    velhos = {k: (off, tam) for k, (off, tam, org) in enumerate(idx) if tam and org == arquivo.ORIGEM_ERA5 and k not in novos}
+    if not velhos:
+        return novos, False
+    if not novos:
+        return novos, True
+    os.makedirs(pasta, exist_ok=True)
+    saida = dict(novos)
+    for k, (off, tam) in velhos.items():
+        p = os.path.join(pasta, f"{k:03d}.webp")
+        with open(p, "wb") as f:
+            f.write(era5.quadro_hf(camada, ano, m, off, tam, base))
+        saida[k] = (p, arquivo.ORIGEM_ERA5)
+    print(f"  {camada}: {len(velhos)} quadros do ERA5 mantidos do HF", flush=True)
+    return saida, False
+
+
 def juntar(a: argparse.Namespace) -> None:
     ano, m, inicio, fim = faixa_do_mes(a.mes)
     n = arquivo.horas_do_mes(ano, m)
@@ -562,9 +588,17 @@ def juntar(a: argparse.Namespace) -> None:
 
     saida = os.path.join(a.trabalho, "saida")
     tamanhos: dict[str, int] = {}
+    era5_mantidos: dict[str, int] = {}
     for c in camadas:
         destino = os.path.join(saida, arquivo.caminho_no_repo(c, ano, m))
-        tamanhos[c] = arquivo.gravar(destino, c, ano, m, {k: (por_hora[k][c], origem_da_hora[k]) for k in horas_ok if c in por_hora[k]})
+        novos = {k: (por_hora[k][c], origem_da_hora[k]) for k in horas_ok if c in por_hora[k]}
+        if c in era5.CAMADAS_ERA5:
+            novos, pular = manter_era5(c, ano, m, novos, os.path.join(a.trabalho, "era5_mantido", c), a.enviar or "richardmelo/painel-nacional-icon")
+            era5_mantidos[c] = sum(1 for _, o in novos.values() if o == arquivo.ORIGEM_ERA5)
+            if pular:  # nada novo e o HF já tem o ERA5: não sobe um .bin vazio por cima
+                print(f"  {c}: sem quadro novo; o .bin do HF (com ERA5) fica como está", flush=True)
+                continue
+        tamanhos[c] = arquivo.gravar(destino, c, ano, m, novos)
         for k in por_hora:  # libera o disco camada a camada
             if c in por_hora[k]:
                 os.remove(por_hora[k][c])
@@ -595,6 +629,7 @@ def juntar(a: argparse.Namespace) -> None:
         "segundos_gerando": round(sum(p["segundos_total"] for p in partes)),
         "cpu_segundos": cpu,
         "conferencia": [p["conferencia"] for p in partes if p.get("conferencia")],
+        "era5_mantidos": era5_mantidos,
         "gerado": dt.datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     os.makedirs(os.path.join(saida, "meses"), exist_ok=True)
