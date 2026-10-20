@@ -17,6 +17,8 @@ import datetime as dt
 import json
 import os
 import shutil
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -66,13 +68,13 @@ def processar_rodada(r: dt.datetime, a: argparse.Namespace, camadas: list[str]) 
     t0 = time.time()
     if not existe(url_espelho("t_2m", rodada, 6)):
         return rodada, False, 0.0
-    ns = argparse.Namespace(cache=a.cache, saida=a.quadros, formato="webp", jobs=a.jobs, conexoes=a.conexoes)
+    # cada rodada num processo à parte: duas rodadas no mesmo processo, cada uma com o seu ProcessPoolExecutor, perderam
+    # GRIB recém-baixados no teste (FileNotFoundError); em processos separados elas não dividem nada além do disco
+    cmd = [sys.executable, os.path.abspath(__file__), "--uma-rodada", rodada, "--trabalho", a.trabalho, "--jobs", str(a.jobs), "--conexoes", str(a.conexoes), "--mes", a.mes]
     try:
-        gerar.baixar_e_processar(ns, rodada, camadas, list(HORAS))
-        ok = True
-    except Exception as e:  # rodada incompleta no espelho: fica de lacuna
-        print(f"  {rodada}: falhou ({e})", flush=True)
-        ok = False
+        ok = subprocess.run(cmd).returncode == 0
+        if not ok:
+            print(f"  {rodada}: falhou", flush=True)
     finally:
         shutil.rmtree(os.path.join(a.cache, rodada), ignore_errors=True)
     return rodada, ok, time.time() - t0
@@ -87,7 +89,13 @@ def main() -> None:
     ap.add_argument("--conexoes", type=int, default=16)
     ap.add_argument("--paralelo", type=int, default=2, help="rodadas ao mesmo tempo (uma baixa enquanto a outra remapeia)")
     ap.add_argument("--enviar", default="", help="repositório do dataset no HF (ex.: richardmelo/painel-nacional-icon)")
+    ap.add_argument("--uma-rodada", default="", help=argparse.SUPPRESS)
     a = ap.parse_args()
+
+    if a.uma_rodada:  # processo filho: baixa e remapeia uma rodada (horas 1 a 6) em <trabalho>/quadros
+        ns = argparse.Namespace(cache=os.path.join(a.trabalho, "cache"), saida=os.path.join(a.trabalho, "quadros"), formato="webp", jobs=a.jobs, conexoes=a.conexoes)
+        gerar.baixar_e_processar(ns, a.uma_rodada, list(gerar.CAMADAS), list(HORAS))
+        return
 
     ano, mes = map(int, a.mes.split("-"))
     inicio = arquivo.inicio_do_mes(ano, mes)
