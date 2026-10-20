@@ -1,7 +1,9 @@
 name: Arquivo horário (Hugging Face)
 
-# Gera o passado horário do modo Global, um job por mês, e sobe cada mês para o dataset público do Hugging Face
-# (arquivo.py descreve o formato; arquivo_mes.py, a geração). Só roda quando alguém dispara, com a lista de meses.
+# Gera o passado horário do modo Global e sobe cada mês para o dataset público do Hugging Face (arquivo.py descreve o
+# formato; arquivo_lote.py, a geração). O mês é cortado em pedaços de algumas rodadas, um job por pedaço (até 20 ao
+# mesmo tempo); depois um job por mês junta os quadros nos 11 arquivos PNA1 e envia. Só roda quando alguém dispara.
+# Lotes do mais novo para o mais antigo: lotes.py imprime os disparos.
 on:
   workflow_dispatch:
     inputs:
@@ -10,46 +12,120 @@ on:
         required: true
         default: "2026-09"
       dataset:
-        description: "Dataset no Hugging Face"
+        description: "Dataset no Hugging Face (vazio = não envia)"
         default: "richardmelo/painel-nacional-icon"
+      rodadas_por_job:
+        description: "Rodadas por job (4 = um dia; a matriz aceita até 256 jobs)"
+        default: "4"
       paralelo:
-        description: "Meses ao mesmo tempo"
+        description: "Jobs ao mesmo tempo (20 é o teto do plano grátis)"
         default: "20"
+      conferir:
+        description: "Gerar a última rodada do primeiro pedaço de cada mês também pelo gerar.py e comparar (1 = sim)"
+        default: "1"
+
+concurrency:
+  group: arquivo-${{ inputs.meses }}
 
 jobs:
   planejar:
     runs-on: ubuntu-latest
     outputs:
       meses: ${{ steps.lista.outputs.meses }}
+      pecas: ${{ steps.lista.outputs.pecas }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -q -r requirements.txt
       - id: lista
-        shell: python
-        env:
-          MESES: ${{ inputs.meses }}
-        run: |
-          import json, os
-          texto = os.environ["MESES"].replace(" ", "")
-          meses = []
-          for parte in texto.split(","):
-              if ".." in parte:
-                  a, b = parte.split("..")
-                  (y, m), (y2, m2) = map(int, a.split("-")), map(int, b.split("-"))
-                  if (y, m) > (y2, m2):
-                      (y, m), (y2, m2) = (y2, m2), (y, m)
-                  while (y, m) <= (y2, m2):
-                      meses.append(f"{y:04d}-{m:02d}")
-                      y, m = (y + 1, 1) if m == 12 else (y, m + 1)
-              elif parte:
-                  meses.append(parte)
-          meses = sorted(set(meses), reverse=True)
-          print(meses)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"meses={json.dumps(meses)}\n")
+        run: python arquivo_lote.py planejar --meses "${{ inputs.meses }}" --rodadas-por-job ${{ inputs.rodadas_por_job }}
 
-  mes:
-    needs: planejar
+  pesos:
+    # calcula os pesos de remapeamento só se o cache não tiver, para os pedaços não fazerem isso 20 vezes
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: /mnt/mundo/cache/pesos-0125.npz
+          key: pesos-icon-0125-v1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p /mnt/mundo/cache && sudo chown -R "$USER" /mnt/mundo
+          pip install -q -r requirements.txt
+          python -c "
+          import arquivo_mes, gerar, os
+          r = '2026090100'
+          c = '/mnt/mundo/cache'
+          for v in gerar.INVARIANTES:
+              gerar.baixar(gerar.url_do(v, r, None), gerar.caminho_cache(c, r, v, None))
+          gerar.construir_pesos(gerar.ler_grib(gerar.caminho_cache(c, r, 'clat', None)), gerar.ler_grib(gerar.caminho_cache(c, r, 'clon', None)), c + '/pesos-0125.npz')
+          "
+
+  gerar:
+    needs: [planejar, pesos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.paralelo) }}
+      matrix:
+        peca: ${{ fromJSON(needs.planejar.outputs.pecas) }}
+    name: ${{ matrix.peca.mes }} ${{ matrix.peca.k }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Dependências
+        run: |
+          pip install -q -r requirements.txt
+          sudo mkdir -p /mnt/mundo/cache && sudo chown -R "$USER" /mnt/mundo
+
+      - name: Pesos de remapeamento (cache)
+        uses: actions/cache/restore@v4
+        with:
+          path: /mnt/mundo/cache/pesos-0125.npz
+          key: pesos-icon-0125-v1
+          fail-on-cache-miss: true
+
+      - name: Gerar
+        run: >
+          python arquivo_lote.py gerar
+          --mes ${{ matrix.peca.mes }}
+          --rodadas ${{ matrix.peca.rodadas }}
+          --trabalho /mnt/mundo
+          --jobs 4
+          --conferir ${{ matrix.peca.k == 0 && inputs.conferir || '0' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: parte-${{ matrix.peca.mes }}-${{ matrix.peca.k }}
+          path: /mnt/mundo/parte
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+
+  juntar:
+    needs: [planejar, gerar]
+    if: ${{ !cancelled() && needs.planejar.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(inputs.paralelo) }}
@@ -67,29 +143,20 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Dependências
-        run: pip install -q -r requirements.txt huggingface_hub==2.2.0
-
-      - name: Espaço em disco
         run: |
-          sudo mkdir -p /mnt/arquivo/cache && sudo chown -R "$USER" /mnt/arquivo
+          pip install -q -r requirements.txt huggingface_hub==2.2.0
+          sudo mkdir -p /mnt/mundo && sudo chown -R "$USER" /mnt/mundo
           df -h / /mnt
 
-      - name: Pesos de remapeamento (cache)
-        uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
-          path: /mnt/arquivo/cache/pesos-0125.npz
-          key: pesos-icon-0125-arquivo-v1
+          pattern: parte-${{ matrix.mes }}-*
+          path: /mnt/mundo/parte
+          merge-multiple: true
 
-      - name: Gerar e enviar ${{ matrix.mes }}
-        run: >
-          python arquivo_mes.py
-          --mes ${{ matrix.mes }}
-          --trabalho /mnt/arquivo
-          --jobs 2
-          --paralelo 2
-          --conexoes 16
-          --enviar ${{ inputs.dataset }}
+      - name: Juntar e enviar ${{ matrix.mes }}
+        run: python arquivo_lote.py juntar --mes ${{ matrix.mes }} --trabalho /mnt/mundo --enviar "${{ inputs.dataset }}"
 
       - name: Resumo
         if: always()
-        run: cat /mnt/arquivo/saida/meses/${{ matrix.mes }}.json 2>/dev/null | head -c 2000 || true
+        run: python -c "import json; d = json.load(open('/mnt/mundo/saida/meses/${{ matrix.mes }}.json')); d['horas'] = len(d['horas']); print(json.dumps(d, ensure_ascii=False, indent=1))" || true
