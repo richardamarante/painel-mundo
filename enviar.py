@@ -109,7 +109,7 @@ def main() -> None:
     ap.add_argument("--prefixo", default="mundo")
     ap.add_argument("--manter", type=int, default=2, help="quantas rodadas ficam no bucket")
     ap.add_argument("--paralelo", type=int, default=16)
-    ap.add_argument("--arquivo-hf", default=historico.ARQUIVO_HF, help="dataset do HF com o arquivo horário ('' = sem ele)")
+    ap.add_argument("--arquivo-hf", default="", help="dataset do HF com o arquivo horário (ex.: richardmelo/painel-nacional-icon); desligado até o cliente com leitor PNA1 estar no ar")
     ap.add_argument("--sem-historico", action="store_true", help="não mexe no histórico e não põe `serie` no manifesto")
     ap.add_argument("--compactar", action="store_true", help="grava o quadro diário (média do dia, 0,5 grau) dos dias encerrados")
     ap.add_argument("--podar-horario-dias", type=int, default=0, help="apaga os quadros horários com mais de N dias que já têm quadro diário (0 = nunca)")
