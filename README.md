@@ -84,6 +84,12 @@ existem (fração de neve 0). TQV, CAPE_ML e H_SNOW não existem em passo nenhum
 primeiro pedaço de um mês da DREAM gera também a rodada 2026091500 da DREAM e compara os valores decodificados com os
 quadros operacionais do mesmo horário já no HF (viés, RMSE, correlação, PNG lado a lado no artefato).
 
+O `step` dos zarr da OCF é int64 (85 passos) até abril de 2024 e float64 (73 passos) depois; o `ocf.py` lê pelo
+`dtype` e pelas `units` do zarr. Passo que o zarr não tem vira passo sem quadro; zip que não existe, que tem o zarr de
+outra rodada (2024/4/5/..._00 diz 2024-04-08) ou que não fecha vira rodada sem cópia. Se o opendata do DWD não
+entregar a DREAM (`leitor_dream.responde()`), as rodadas dela e os buracos da OCF também ficam sem cópia, sem derrubar o
+dia. O juntar não envia um mês com 0 horas nem com menos horas do que o `meses/AAAA-MM.json` do HF já tem.
+
 ### agua, cape e neve do ERA5 nas horas da DREAM
 
 `era5.py` (workflow **ERA5 nas horas da DREAM**) preenche essas três camadas com a reanálise ERA5 do ECMWF (CC BY 4.0,
