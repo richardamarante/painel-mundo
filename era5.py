@@ -236,6 +236,9 @@ def preencher(a: argparse.Namespace) -> dict:
             alvo[c] = alvo[c][: a.limite]
     horas = sorted({k for c in CAMADAS_ERA5 for k in alvo[c]})
     print(f"{a.mes}: {len(dream)} horas da DREAM; a gerar: " + ", ".join(f"{c} {len(alvo[c])}" for c in CAMADAS_ERA5), flush=True)
+    if not horas:  # o mês já está preenchido: nada a gerar nem a enviar
+        print(f"{a.mes}: já preenchido", flush=True)
+        return {}
 
     # quadros do ERA5, uma hora por trabalhador
     t1 = time.time()
