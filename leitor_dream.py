@@ -106,6 +106,22 @@ def tem_dados(rodada: str, passos: list[int] | None = None) -> bool:
     return True
 
 
+_RESPONDE: dict[str, bool] = {}
+
+
+def responde() -> bool:
+    """O opendata do DWD entrega o corpo dos arquivos da DREAM? Desde 20/10/2026 ~09 UTC ele manda o cabeçalho e corta
+    o corpo de tudo em ICON-DREAM-Global (o HEAD dá 200). Um pedido de 64 KB do GRIB de um mês, com poucas tentativas;
+    o resultado vale para o processo inteiro, para cada rodada não esperar os ~10 min de tentativas do `_faixa`."""
+    if "ok" not in _RESPONDE:
+        try:
+            _RESPONDE["ok"] = len(_faixa(url_mes("T_2M", 2020, 1), 0, (1 << 16) - 1, tentativas=4)) == 1 << 16
+        except Exception as e:
+            print(f"aviso: a DREAM não responde ({e}); as rodadas dela ficam sem cópia", flush=True)
+            _RESPONDE["ok"] = False
+    return _RESPONDE["ok"]
+
+
 def cobre(rodada: str) -> bool:
     """Rodadas em que a DREAM é a fonte do arquivo: antes da OCF (desde 2015) e entre o fim da OCF e as cópias brutas."""
     r = dt.datetime.strptime(rodada, "%Y%m%d%H").replace(tzinfo=UTC)

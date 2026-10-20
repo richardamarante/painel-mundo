@@ -94,6 +94,14 @@ def tamanho(url: str) -> int:
     return int(cab.get("Content-Length") or 0)
 
 
+class RodadaTrocada(ValueError):
+    """O zarr de um caminho é de outra rodada (`real`): o arquivo_lote ignora o zip em vez de derrubar o dia."""
+
+    def __init__(self, url: str, real: str, msg: str):
+        super().__init__(msg)
+        self.url, self.real = url, real
+
+
 class _Faixa:
     """Arquivo remoto só para o zipfile ler o índice (poucos pedidos, com leitura adiantada)."""
 
@@ -142,17 +150,32 @@ class Rodada:
         t = np.frombuffer(z.read("time/0"), "<i8")[0]
         inicio = dt.datetime(1970, 1, 1) + dt.timedelta(microseconds=int(t) // 1000)
         if inicio.strftime("%Y%m%d%H") != rodada:
-            raise ValueError(f"{self.url}: o zarr diz {inicio}, não {rodada}")
+            raise RodadaTrocada(self.url, inicio.strftime("%Y%m%d%H"), f"{self.url}: o zarr diz {inicio}, não {rodada}")
         self.passos = self._passos(z)
 
     def _passos(self, z) -> list[float]:
+        """Os passos em horas. Até abril de 2024 a OCF gravou `step` em int64 (85 passos); depois, em float64 (73
+        passos). As duas são horas (atributo `units`); timedelta64 e outras unidades também são aceitos."""
         import numcodecs
 
         za = self.meta["step/.zarray"]
         bruto = z.read("step/0")
         if za["compressor"]:
             bruto = numcodecs.get_codec(za["compressor"]).decode(bruto)
-        return np.frombuffer(bruto, "<f8").tolist()
+        v = np.frombuffer(bruto, za["dtype"])[: za["shape"][0]]
+        if v.dtype.kind == "m":
+            return (v.astype("timedelta64[s]").astype(np.float64) / 3600).tolist()
+        unidade = str((self.meta.get("step/.zattrs") or {}).get("units", "hours")).lower()
+        fator = next((f for k, f in (("nano", 1 / 3.6e12), ("micro", 1 / 3.6e9), ("milli", 1 / 3.6e6), ("sec", 1 / 3600),
+                                     ("min", 1 / 60), ("day", 24.0), ("h", 1.0)) if unidade.startswith(k)), 1.0)
+        return (v.astype(np.float64) * fator).tolist()
+
+    def linha(self, h: int) -> int | None:
+        """Índice do passo `h` (horas) no zarr, ou None se a rodada não tem esse passo."""
+        try:
+            return self.passos.index(float(h))
+        except ValueError:
+            return None
 
     def bloco(self, nome: str) -> bytes:
         """Bytes comprimidos de um bloco (um pedido de faixa; o cabeçalho local do zip vem junto e é descartado)."""
@@ -165,14 +188,19 @@ class Rodada:
         return dados
 
     def campos(self, var: str, horas: list[int], conexoes: int = 8) -> dict[int, np.ndarray]:
-        """{hora: float32 (VALORES,)} das horas pedidas, do bloco de passos onde elas caem."""
+        """{hora: float32 (VALORES,)} das horas pedidas que a rodada tem, do bloco de passos onde elas caem (hora que o
+        zarr não tem fica fora do resultado e vira passo sem quadro no arquivo_lote)."""
         import blosc2
 
         za = self.meta[f"{var}/.zarray"]
         (ns, nv), (cs, cv) = za["shape"], za["chunks"]
         if nv != VALORES or za["dtype"] != "<f4" or za["order"] != "C" or za["filters"]:
             raise ValueError(f"{var}: formato inesperado {za}")
-        linhas = {h: self.passos.index(float(h)) for h in horas}
+        linhas = {h: self.linha(h) for h in horas}
+        linhas = {h: k for h, k in linhas.items() if k is not None}
+        horas = list(linhas)
+        if not horas:
+            return {}
         blocos_t = sorted({k // cs for k in linhas.values()})
         saida = {h: np.empty(VALORES, np.float32) for h in horas}
 
@@ -194,7 +222,8 @@ class Rodada:
 def baixar_rodada(rodada: str, pedidos: list[tuple[str, int]], cache: str, caminho_cache, conexoes: int = 16) -> int:
     """Baixa os (variável, hora) pedidos de uma rodada para o cache, cada um em `caminho_npy(caminho_cache(...))`.
 
-    Devolve os bytes baixados. Levanta FileNotFoundError se a rodada não está no arquivo.
+    Devolve os bytes baixados. Levanta FileNotFoundError se a rodada não está no arquivo e RodadaTrocada se o zip é de
+    outra rodada. Um passo que o zarr não tem não levanta: o .npy dele não aparece no cache.
     """
     r = Rodada(rodada)
     por_var: dict[str, list[int]] = {}
@@ -206,7 +235,8 @@ def baixar_rodada(rodada: str, pedidos: list[tuple[str, int]], cache: str, camin
     def var_inteira(v):
         nonlocal total
         cs = r.meta[f"{v}/.zarray"]["chunks"][0]
-        total += sum(r.info[n].compress_size for n in r.info if n.startswith(f"{v}/") and n.split("/")[1].split(".")[0] in {str(r.passos.index(float(h)) // cs) for h in por_var[v]})
+        blocos_t = {str(r.linha(h) // cs) for h in por_var[v] if r.linha(h) is not None}
+        total += sum(r.info[n].compress_size for n in r.info if n.startswith(f"{v}/") and n.split("/")[1].split(".")[0] in blocos_t)
         for h, a in r.campos(v, por_var[v], conexoes=max(2, conexoes // 4)).items():
             destino = caminho_npy(caminho_cache(cache, rodada, v, h))
             os.makedirs(os.path.dirname(destino), exist_ok=True)

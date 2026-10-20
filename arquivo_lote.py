@@ -267,17 +267,29 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
 
     fontes = {r: fonte(r) for r in passos}
 
+    def dream_tem(r: str) -> bool:
+        # a DREAM fora do ar (o opendata do DWD manda o cabeçalho e corta o corpo) vira rodada sem cópia, não dia caído
+        try:
+            return dream.tem_dados(r, passos[r]) and dream.responde()
+        except Exception as e:
+            print(f"aviso: {r}: DREAM indisponível ({e})", flush=True)
+            return False
+
     def tem_copia(r: str) -> bool:
-        if fontes[r] == "ocf":
-            return ocf.tamanho(ocf.url_rodada(r)) > 1 << 30  # os buracos da OCF têm zips de 0 byte
-        if fontes[r] == "dream":
-            return dream.tem_dados(r, passos[r])
-        return arquivo_mes.existe(gerar.url_do("t_2m", r, max(passos[r])))
+        try:
+            if fontes[r] == "ocf":
+                return ocf.tamanho(ocf.url_rodada(r)) > 1 << 30  # os buracos da OCF têm zips de 0 byte
+            if fontes[r] == "dream":
+                return dream_tem(r)
+            return arquivo_mes.existe(gerar.url_do("t_2m", r, max(passos[r])))
+        except Exception as e:
+            print(f"aviso: {r}: não deu para conferir a cópia ({e})", flush=True)
+            return False
 
     with cf.ThreadPoolExecutor(8) as ex:
         tem = dict(zip(passos, ex.map(tem_copia, passos)))
     # buraco da OCF (ou rodada bruta que falta): a DREAM tapa, sem as camadas que ela não tem
-    for r in [r for r in passos if not tem[r] and fontes[r] != "dream" and dream.tem_dados(r, passos[r])]:
+    for r in [r for r in passos if not tem[r] and fontes[r] != "dream" and dream_tem(r)]:
         fontes[r], tem[r] = "dream", True
     sem_copia = [r for r in passos if not tem[r]]
     passos = {r: p for r, p in passos.items() if tem[r]}
@@ -297,17 +309,33 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
     mb_ocf = 0.0
 
     def baixar_ocf(r: str) -> float:
+        # zip que sumiu, zip com o zarr de outra rodada (ocf.RodadaTrocada: 2024/4/5/..._00 diz 2024-04-08) ou leitura
+        # que não fecha: a rodada vira lacuna, o dia segue
         try:
             return ocf.baixar_rodada(r, da_ocf[r], cache, gerar.caminho_cache, conexoes=max(4, a.conexoes // max(1, len(da_ocf)))) / 1e6
         except FileNotFoundError:
             return -1.0
+        except Exception as e:
+            print(f"aviso: {r}: zarr da OCF ignorado ({type(e).__name__}: {e})", flush=True)
+            return -1.0
 
     def baixar_dream(r: str) -> float:  # mensagens do GRIB mensal por faixa (dream.preparar)
         # poucas conexões por job ao opendata do DWD (ver dream._faixa): DREAM_CONEXOES no total, divididas entre as rodadas
-        return dream.preparar(cache, r, passos[r], conexoes=max(1, DREAM_CONEXOES // max(1, len(da_dream)))) / 1e6
+        try:
+            return dream.preparar(cache, r, passos[r], conexoes=max(1, DREAM_CONEXOES // max(1, len(da_dream)))) / 1e6
+        except Exception as e:
+            print(f"aviso: {r}: DREAM falhou ({type(e).__name__}: {e}); a rodada fica sem cópia", flush=True)
+            return -1.0
 
+    mb_dream = 0.0
     with cf.ThreadPoolExecutor(max(1, len(da_dream))) as ex3:
-        mb_dream = sum(ex3.map(baixar_dream, da_dream))
+        for r, n in zip(list(da_dream), ex3.map(baixar_dream, list(da_dream))):
+            if n < 0:
+                sem_copia.append(r)
+                del passos[r]
+                tarefas = [t for t in tarefas if t[2] != r]
+            else:
+                mb_dream += n
     def baixar_ou_falta(url: str, destino: str) -> str | None:
         """gerar.baixar, mas um 404 (GRIB que a cópia não tem) volta como falta em vez de derrubar o pedaço."""
         try:
@@ -329,10 +357,16 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
                 else:
                     mb_ocf += n
         ausentes = [u for u in (f.result() for f in fut) if u]
+    # passo que o zarr da OCF não tem: o .npy não aparece no cache e o passo segue o mesmo caminho do GRIB ausente
+    faltando = {d for u, d in baixar if u in set(ausentes)}
+    for r, pedidos in da_ocf.items():
+        if r in passos:
+            sem = [(v, h) for v, h in pedidos if not os.path.exists(ocf.caminho_npy(gerar.caminho_cache(cache, r, v, h)))]
+            faltando |= {gerar.caminho_cache(cache, r, v, h) for v, h in sem}
+            ausentes += [f"{ocf.url_rodada(r)}#{v}+{h}" for v, h in sem]
     # GRIB ausente: só os passos que dependem dele viram lacuna (o próprio passo e, se for acumulado, o seguinte)
     horas_sem_quadro = []
-    if ausentes:
-        faltando = {d for u, d in baixar if u in set(ausentes)}
+    if faltando:
         novas = []
         for t in tarefas:
             r, ps, anterior = t[2], t[3], t[4]
@@ -562,6 +596,25 @@ def manter_era5(camada: str, ano: int, m: int, novos: dict[int, tuple[str, int]]
     return saida, False
 
 
+def horas_no_hf(repo: str, mes: str) -> int:
+    """Horas do mês que o HF já tem (meses/AAAA-MM.json); 0 se o mês não existe lá. Erro de rede levanta: sem saber o
+    que está lá, o juntar não envia."""
+    import requests
+
+    url = f"https://huggingface.co/datasets/{repo}/resolve/main/meses/{mes}.json"
+    for k in range(6):
+        try:
+            r = requests.get(url, timeout=60)
+            if r.status_code == 404:
+                return 0
+            r.raise_for_status()
+            return len(r.json().get("horas", []))
+        except Exception as e:
+            ultimo = e
+            time.sleep(5 * (k + 1))
+    raise SystemExit(f"{mes}: não consegui ler {url} ({ultimo}); não envio sem saber o que o HF tem")
+
+
 def juntar(a: argparse.Namespace) -> None:
     ano, m, inicio, fim = faixa_do_mes(a.mes)
     n = arquivo.horas_do_mes(ano, m)
@@ -646,6 +699,10 @@ def juntar(a: argparse.Namespace) -> None:
         print(f"  faltam {len(faltam)} horas: {faltam[:24]}{' ...' if len(faltam) > 24 else ''}", flush=True)
 
     if a.enviar:
+        no_hf = horas_no_hf(a.enviar, a.mes)
+        if not horas_ok or len(horas_ok) < no_hf:
+            # um mês vazio ou menor do que o do HF apagaria horas boas (o 2015-01 subiu com 0 de 744 com a DREAM fora)
+            raise SystemExit(f"{a.mes}: não enviado, {len(horas_ok)} horas novas contra {no_hf} no HF")
         from huggingface_hub import HfApi
 
         api = HfApi()
