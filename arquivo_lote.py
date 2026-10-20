@@ -81,7 +81,8 @@ def planejar(a: argparse.Namespace) -> None:
         rodadas = [r.strftime("%Y%m%d%H") for r in arquivo_mes.rodadas_do_mes(ano, m, min(fim, agora - dt.timedelta(hours=8)))]
         grupos = [rodadas[k : k + a.rodadas_por_job] for k in range(0, len(rodadas), a.rodadas_por_job)]
         if len(grupos) > 1 and len(grupos[-1]) == 1:  # uma rodada sozinha não paga o job: vai para o pedaço anterior
-            grupos[-2] += grupos.pop()
+            ultimo = grupos.pop()  # (grupos[-2] += grupos.pop() somaria no pedaço errado: o índice -2 muda depois do pop)
+            grupos[-1] = grupos[-1] + ultimo
         pecas += [{"mes": mes, "k": k, "rodadas": ",".join(g)} for k, g in enumerate(grupos)]
     if len(pecas) > MAX_MATRIZ:
         raise SystemExit(f"{len(pecas)} pedaços passam do limite de {MAX_MATRIZ} da matriz: dispare menos meses por vez")
