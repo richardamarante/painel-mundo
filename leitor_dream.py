@@ -1,4 +1,8 @@
-"""Leitor da reanálise ICON-DREAM-Global do DWD para o arquivo horário, de 2015-01-01 até 2023-03-20.
+"""Leitor da reanálise ICON-DREAM-Global do DWD para o arquivo horário: 2015-01 até a OCF (21/03/2023) e a lacuna
+entre o fim da OCF (15/08/2025) e o começo das cópias brutas do opendata (12/03/2026). Também tapa os buracos da OCF.
+
+A DREAM no opendata é contínua: em 20/10/2026 o servidor tinha de 2010-01 a 2026-09 em todas as variáveis usadas aqui,
+com um mês novo por mês (`cobre` e `tem_dados`).
 
 Entrega ao caminho de geração (`gerar.processar_passo`) os mesmos campos que o ICON operacional entrega, com as mesmas
 siglas, unidades e alturas, na mesma grade nativa: a DREAM roda na grade icosaédrica R03B07 do ICON global
@@ -47,9 +51,12 @@ import numpy as np
 
 BASE_DREAM = "https://opendata.dwd.de/climate_environment/REA/ICON-DREAM-Global/hourly"
 ATRIBUICAO_DREAM = "Dados: DWD (ICON-DREAM-Global, reanálise), CC BY 4.0, doi:10.5676/dwd/icon-dream_v1"
-INICIO = dt.datetime(2015, 1, 1, tzinfo=dt.timezone.utc)
-FIM = dt.datetime(2023, 3, 20, tzinfo=dt.timezone.utc)  # começo das cópias operacionais (OCF)
 UTC = dt.timezone.utc
+INICIO = dt.datetime(2015, 1, 1, tzinfo=UTC)  # começo do arquivo horário do painel (a DREAM tem desde 2010-01)
+ULTIMO_MES = (2026, 9)  # último mês visto no servidor em 20/10/2026; `tem_dados` pergunta ao servidor depois dele
+INICIO_OCF = dt.datetime(2023, 3, 21, tzinfo=UTC)  # ocf.PRIMEIRA_RODADA
+FIM_OCF = dt.datetime(2025, 8, 12, 6, tzinfo=UTC)  # a rodada depois de ocf.ULTIMA_RODADA (o arquivo usa as horas 1 a 6)
+INICIO_RAW = dt.datetime(2026, 3, 12, tzinfo=UTC)  # primeira cópia bruta do opendata no source.coop
 N_CELULAS = 2949120
 GRADE_ICON = 26  # numberOfGridUsed do ICON global R03B07
 
@@ -75,6 +82,34 @@ CAMADAS_DREAM = ["t2m", "td2m", "ur2m", "pnm", "nuvens", "sensacao", "vento", "c
 C1ES, C3LES, C4LES, TMELT = 610.78, 17.269, 35.86, 273.15
 
 _local = threading.local()
+_meses_no_servidor: dict[tuple[int, int], bool] = {}
+
+
+def tem_dados(rodada: str, passos: list[int] | None = None) -> bool:
+    """A DREAM tem as horas desta rodada-rótulo? (todas as variáveis saem juntas, então basta a T_2M do mês)."""
+    r = dt.datetime.strptime(rodada, "%Y%m%d%H").replace(tzinfo=UTC)
+    horas = [r + dt.timedelta(hours=h) for h in (passos or [1, 6])]
+    if min(horas) < dt.datetime(2010, 1, 1, 1, tzinfo=UTC):
+        return False
+    for t in horas:
+        am = (t.year, t.month)
+        if am <= ULTIMO_MES:
+            continue
+        if am not in _meses_no_servidor:
+            try:
+                r_ = _sessao().head(url_mes("T_2M", *am), timeout=60)
+                _meses_no_servidor[am] = r_.status_code == 200
+            except Exception:
+                _meses_no_servidor[am] = False
+        if not _meses_no_servidor[am]:
+            return False
+    return True
+
+
+def cobre(rodada: str) -> bool:
+    """Rodadas em que a DREAM é a fonte do arquivo: antes da OCF (desde 2015) e entre o fim da OCF e as cópias brutas."""
+    r = dt.datetime.strptime(rodada, "%Y%m%d%H").replace(tzinfo=UTC)
+    return INICIO - dt.timedelta(hours=6) <= r < INICIO_OCF or FIM_OCF <= r < INICIO_RAW
 _travas: dict[tuple, threading.Lock] = {}
 _trava_geral = threading.Lock()
 

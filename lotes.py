@@ -7,11 +7,11 @@ disparos entram na fila do Actions e rodam um depois do outro, porque o teto de 
     python lotes.py --disparar            # dispara todos com o gh (repete quando a rede falha)
     python lotes.py --disparar --so 1     # só o primeiro lote
 
-Fontes: as cópias do opendata no source.coop (bkr/icon/icon-global-raw), de 12/03/2026 em diante, e o arquivo zarr da
-Open Climate Fix (ocf.py), de 21/03/2023 a 15/08/2025. Os buracos da OCF (28-29/05/2023, 16/03 a 04/06/2024 e 27/01 a
-03/04/2025) ficam como horas sem quadro no índice e em `rodadas_sem_copia`. De 09/2025 a 02/2026 não há cópia completa
-do ICON operacional: a hylosense só tem a rodada das 00 UTC e 9 das 14 variáveis (faltam td_2m, clct, tqv, cape_ml e
-h_snow), então esses meses ficam de fora (LACUNA) e a lista avisa.
+Fontes: as cópias do opendata no source.coop (bkr/icon/icon-global-raw), de 12/03/2026 em diante; o arquivo zarr da
+Open Climate Fix (ocf.py), de 21/03/2023 a 15/08/2025; e a reanálise ICON-DREAM do DWD (leitor_dream.py) de 2015-01 a
+20/03/2023, de 13/08/2025 a 11/03/2026 (a antiga lacuna) e nos buracos da OCF (28-29/05/2023, 16/03 a 04/06/2024 e
+27/01 a 03/04/2025). Nas horas da DREAM as camadas agua, cape e neve ficam sem quadro: ela não tem TQV, CAPE_ML nem
+H_SNOW.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ import time
 import arquivo_lote
 
 PRIMEIRO_MES_RAW = "2026-03"
-PRIMEIRO_MES = "2023-03"  # OCF
-LACUNA = ("2025-09", "2026-02")  # sem cópia completa de nenhuma rodada
+PRIMEIRO_MES = "2015-01"  # DREAM até a OCF
+LACUNA = ("2025-09", "2026-02")  # sem cópia do ICON operacional: sai da DREAM, mas num lote à parte
 MESES_POR_LOTE = 8
 
 
@@ -36,6 +36,7 @@ def main() -> None:
     ap.add_argument("--por-lote", type=int, default=MESES_POR_LOTE)
     ap.add_argument("--min-por-job", type=float, default=4.7, help="minutos de um pedaço (job inteiro), medidos no 2026-09")
     ap.add_argument("--min-por-job-ocf", type=float, default=4.7, help="minutos de um pedaço da OCF (2 GB por rodada)")
+    ap.add_argument("--min-por-job-dream", type=float, default=4.7, help="minutos de um pedaço da DREAM (medir no 2019-01)")
     ap.add_argument("--min-juntar", type=float, default=2.5, help="minutos do job que junta e envia um mês, medidos no 2026-09")
     ap.add_argument("--disparar", action="store_true")
     ap.add_argument("--so", type=int, default=0, help="dispara só os N primeiros lotes")
@@ -45,17 +46,18 @@ def main() -> None:
     hoje = dt.date.today()
     ate = a.ate or (hoje.replace(day=1) - dt.timedelta(days=1)).strftime("%Y-%m")
     meses = arquivo_lote.expandir_meses(f"{a.de}..{ate}")
-    fora = [m for m in meses if LACUNA[0] <= m <= LACUNA[1]]
-    if fora:
-        print(f"de fora, sem cópia completa do ICON operacional: {fora[-1]}..{fora[0]} ({len(fora)} meses)")
-    meses = [m for m in meses if m not in fora]
-    # um lote não mistura os dois lados da lacuna, para o intervalo do disparo não cobrir os meses de fora
-    blocos = [[m for m in meses if m > LACUNA[1]], [m for m in meses if m < LACUNA[0]]]
+    # blocos por fonte, para cada disparo ser de uma fonte só: cópias brutas, lacuna (DREAM), OCF, DREAM antes da OCF
+    blocos = [
+        [m for m in meses if m > LACUNA[1]],
+        [m for m in meses if LACUNA[0] <= m <= LACUNA[1]],
+        [m for m in meses if "2023-03" <= m < LACUNA[0]],
+        [m for m in meses if m < "2023-03"],
+    ]
     lotes = [b[k : k + a.por_lote] for b in blocos for k in range(0, len(b), a.por_lote)]
     total = 0.0
     for i, lote in enumerate(lotes, 1):
         pecas = 31 * len(lote)
-        por_job = a.min_por_job if lote[-1] >= PRIMEIRO_MES_RAW else a.min_por_job_ocf
+        por_job = a.min_por_job if lote[-1] >= PRIMEIRO_MES_RAW else a.min_por_job_ocf if lote[-1] >= "2023-03" and lote[0] < LACUNA[0] else a.min_por_job_dream
         minutos = -(-pecas // 20) * por_job + -(-len(lote) // 20) * a.min_juntar
         total += minutos
         print(f"lote {i}: {lote[0]}..{lote[-1]} ({len(lote)} meses, ~{pecas} jobs), ~{minutos / 60:.1f} h")
@@ -63,7 +65,7 @@ def main() -> None:
     if not a.disparar:
         return
     if a.de < PRIMEIRO_MES:
-        raise SystemExit(f"antes de {PRIMEIRO_MES} o arquivo_lote.py ainda não lê a DREAM: a estimativa vale, o disparo não")
+        raise SystemExit(f"o arquivo horário começa em {PRIMEIRO_MES}")
     for lote in lotes[: a.so or None]:
         intervalo = f"{lote[-1]}..{lote[0]}"
         for k in range(8):
