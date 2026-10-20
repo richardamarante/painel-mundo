@@ -132,20 +132,28 @@ def url_mes(var_dream: str, ano: int, mes: int) -> str:
     return f"{BASE_DREAM}/{var_dream}/ICON-DREAM-Global_{ano:04d}{mes:02d}_{var_dream}_hourly.grb"
 
 
-def _faixa(url: str, a: int, b: int, tentativas: int = 8) -> bytes:
+def _faixa(url: str, a: int, b: int, tentativas: int = 14) -> bytes:
+    # O opendata do DWD derruba conexões e responde 503 quando muitos jobs pedem ao mesmo tempo (20 jobs x 32 conexões
+    # derrubaram 2/3 dos dias de 2015-01): espera crescente com sorteio, até ~1 min, e respeita o Retry-After.
+    import random
+
     ultimo: Exception | None = None
     for k in range(tentativas):
+        espera = min(60.0, 2.0 * 1.6**k) * (0.5 + random.random())
         try:
             r = _sessao().get(url, headers={"Range": f"bytes={a}-{b}"}, timeout=120)
             if r.status_code == 416:
                 return b""
+            if r.status_code in (429, 503) and r.headers.get("Retry-After", "").isdigit():
+                espera = max(espera, float(r.headers["Retry-After"]))
             r.raise_for_status()
             if r.status_code != 206:
                 raise RuntimeError(f"o servidor não respondeu por faixa ({r.status_code})")
             return r.content
-        except Exception as e:  # rede instável: espera e tenta de novo
+        except Exception as e:  # rede instável ou servidor cheio: espera e tenta de novo
             ultimo = e
-            time.sleep(2 + 3 * k)
+            _local.__dict__.pop("s", None)  # conexão derrubada: sessão nova na próxima tentativa
+            time.sleep(espera)
     raise RuntimeError(f"falha na faixa {a}-{b} de {url}: {ultimo}")
 
 

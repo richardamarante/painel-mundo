@@ -47,6 +47,9 @@ MAX_MATRIZ = 256
 WEBP_METODO, WEBP_QUALIDADE = 0, 0
 
 
+# Conexões ao mesmo tempo de um job com o opendata do DWD (DREAM). Com 20 jobs, 20 x 6 = 120 no servidor.
+DREAM_CONEXOES = 6
+
 def fonte(rodada: str) -> str:
     if ocf.cobre(rodada):
         return "ocf"
@@ -300,7 +303,8 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
             return -1.0
 
     def baixar_dream(r: str) -> float:  # mensagens do GRIB mensal por faixa (dream.preparar)
-        return dream.preparar(cache, r, passos[r], conexoes=max(4, a.conexoes // max(1, len(da_dream)))) / 1e6
+        # poucas conexões por job ao opendata do DWD (ver dream._faixa): DREAM_CONEXOES no total, divididas entre as rodadas
+        return dream.preparar(cache, r, passos[r], conexoes=max(1, DREAM_CONEXOES // max(1, len(da_dream)))) / 1e6
 
     with cf.ThreadPoolExecutor(max(1, len(da_dream))) as ex3:
         mb_dream = sum(ex3.map(baixar_dream, da_dream))
