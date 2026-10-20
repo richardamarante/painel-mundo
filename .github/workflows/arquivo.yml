@@ -1,0 +1,95 @@
+name: Arquivo horário (Hugging Face)
+
+# Gera o passado horário do modo Global, um job por mês, e sobe cada mês para o dataset público do Hugging Face
+# (arquivo.py descreve o formato; arquivo_mes.py, a geração). Só roda quando alguém dispara, com a lista de meses.
+on:
+  workflow_dispatch:
+    inputs:
+      meses:
+        description: "Meses AAAA-MM separados por vírgula, ou um intervalo AAAA-MM..AAAA-MM (o mais recente sai primeiro)"
+        required: true
+        default: "2026-09"
+      dataset:
+        description: "Dataset no Hugging Face"
+        default: "richardmelo/painel-nacional-icon"
+      paralelo:
+        description: "Meses ao mesmo tempo"
+        default: "20"
+
+jobs:
+  planejar:
+    runs-on: ubuntu-latest
+    outputs:
+      meses: ${{ steps.lista.outputs.meses }}
+    steps:
+      - id: lista
+        shell: python
+        env:
+          MESES: ${{ inputs.meses }}
+        run: |
+          import json, os
+          texto = os.environ["MESES"].replace(" ", "")
+          meses = []
+          for parte in texto.split(","):
+              if ".." in parte:
+                  a, b = parte.split("..")
+                  (y, m), (y2, m2) = map(int, a.split("-")), map(int, b.split("-"))
+                  if (y, m) > (y2, m2):
+                      (y, m), (y2, m2) = (y2, m2), (y, m)
+                  while (y, m) <= (y2, m2):
+                      meses.append(f"{y:04d}-{m:02d}")
+                      y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+              elif parte:
+                  meses.append(parte)
+          meses = sorted(set(meses), reverse=True)
+          print(meses)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"meses={json.dumps(meses)}\n")
+
+  mes:
+    needs: planejar
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.paralelo) }}
+      matrix:
+        mes: ${{ fromJSON(needs.planejar.outputs.meses) }}
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Dependências
+        run: pip install -q -r requirements.txt huggingface_hub==2.2.0
+
+      - name: Espaço em disco
+        run: |
+          sudo mkdir -p /mnt/arquivo/cache && sudo chown -R "$USER" /mnt/arquivo
+          df -h / /mnt
+
+      - name: Pesos de remapeamento (cache)
+        uses: actions/cache@v4
+        with:
+          path: /mnt/arquivo/cache/pesos-0125.npz
+          key: pesos-icon-0125-arquivo-v1
+
+      - name: Gerar e enviar ${{ matrix.mes }}
+        run: >
+          python arquivo_mes.py
+          --mes ${{ matrix.mes }}
+          --trabalho /mnt/arquivo
+          --jobs 2
+          --paralelo 2
+          --conexoes 16
+          --enviar ${{ inputs.dataset }}
+
+      - name: Resumo
+        if: always()
+        run: cat /mnt/arquivo/saida/meses/${{ matrix.mes }}.json 2>/dev/null | head -c 2000 || true
