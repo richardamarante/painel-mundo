@@ -91,6 +91,27 @@ class TestCampos(unittest.TestCase):
                 self.assertTrue(v in L.DIRETAS or v in L.ZERADAS or v == "relhum_2m", v)
 
 
+class TestLigacao(unittest.TestCase):
+    def test_fonte_por_periodo(self):
+        import arquivo_lote as A
+
+        esperado = {"2014123118": "dream", "2019011500": "dream", "2023032018": "dream", "2023032100": "ocf",
+                    "2025081200": "ocf", "2025081206": "dream", "2026031118": "dream", "2026031200": "icon"}
+        self.assertEqual({r: A.fonte(r) for r in esperado}, esperado)
+
+    def test_decodificar_quadro_inverte_o_gerar(self):
+        import arquivo_lote as A
+        import gerar
+
+        rng = np.random.default_rng(1)
+        g = rng.uniform(-60, 50, (gerar.NY, gerar.NX))
+        v = A.decodificar_quadro(gerar.quadro_escalar(g, gerar.CAMADAS["t2m"]), "t2m")["t2m"]
+        self.assertLess(np.abs(v - g).max(), 125 / 1023 / 2 + 1e-9)
+        u = rng.uniform(-40, 40, (gerar.NY, gerar.NX))
+        d = A.decodificar_quadro(gerar.quadro_vento(u, -u, np.abs(u), gerar.CAMADAS["vento"]), "vento")
+        self.assertLess(np.abs(d["u"] - u).max(), 100 / 255 / 2 + 1e-9)
+
+
 @unittest.skipUnless(os.environ.get("DREAM_REDE") == "1", "sem rede (DREAM_REDE=1 liga)")
 class TestRede(unittest.TestCase):
     def test_primeira_hora_de_2019(self):
