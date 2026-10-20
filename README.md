@@ -71,6 +71,16 @@ Fontes por período: cópias do opendata no source.coop (`bkr/icon/icon-global-r
 zarr da Open Climate Fix (`bkr/icon/icon`, `ocf.py`) de 21/03/2023 a 15/08/2025, com os buracos de 28-29/05/2023,
 16/03 a 04/06/2024 e 27/01 a 03/04/2025. O float32 da OCF volta exatamente ao float64 que o eccodes dá ao GRIB (o GRIB
 guarda inteiros de 16 bits num passo 2^E, mais grosso que o arredondamento do float32), então os quadros são os mesmos.
-De 09/2025 a 02/2026 não há cópia completa (a hylosense só tem a rodada das 00 UTC e 9 das 14 variáveis): lacuna.
+Antes da OCF (2015-01 a 20/03/2023), entre o fim dela e as cópias brutas (rodadas de 12/08/2025 06 UTC a 11/03/2026)
+e nos buracos da OCF, a fonte é a reanálise ICON-DREAM-Global do DWD (`leitor_dream.py`, CC BY 4.0,
+doi:10.5676/dwd/icon-dream_v1), que no opendata é contínua de 2010-01 até o mês passado. Ela roda na mesma grade R03B07
+do ICON global (`numberOfGridUsed` 26, 2.949.120 células), então os pesos `pesos-icon-0125-v1` do cache servem. Cada
+variável vem de um GRIB mensal, lido por faixa só nas horas pedidas. Mesmas siglas e unidades para t_2m, td_2m, pmsl,
+clct, u_10m, v_10m e vmax_10m (esta com janela de 1 a 3 h, desde o início do ciclo de 3 h); a chuva horária da DREAM
+vira o acumulado desde a rodada; relhum_2m sai de T e Td com a pressão de saturação do ICON; snow_gsp e snow_con não
+existem (fração de neve 0). TQV, CAPE_ML e H_SNOW não existem em passo nenhum: nas horas da DREAM as camadas `agua`,
+`cape` e `neve` ficam sem quadro (tamanho 0 no índice) e o resto da hora entra com origem 3. Com `--conferir`, o
+primeiro pedaço de um mês da DREAM gera também a rodada 2026091500 da DREAM e compara os valores decodificados com os
+quadros operacionais do mesmo horário já no HF (viés, RMSE, correlação, PNG lado a lado no artefato).
 
 Segredos do repositório: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `HF_TOKEN`.
