@@ -83,4 +83,7 @@ existem (fração de neve 0). TQV, CAPE_ML e H_SNOW não existem em passo nenhum
 primeiro pedaço de um mês da DREAM gera também a rodada 2026091500 da DREAM e compara os valores decodificados com os
 quadros operacionais do mesmo horário já no HF (viés, RMSE, correlação, PNG lado a lado no artefato).
 
+GRIB ausente na cópia (404) não derruba o pedaço: o passo que depende dele (e o seguinte, se o arquivo for de um
+acumulado) fica sem quadro, e o mês registra `grib_ausentes` e `passos_sem_quadro` no `meses/<AAAA-MM>.json`.
+
 Segredos do repositório: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `HF_TOKEN`.
