@@ -270,8 +270,22 @@ def _indice_mes(cache: str, var_dream: str, ano: int, mes: int, ate: dt.datetime
             falta = int((ate - ultimo).total_seconds() // 3600) - 1  # mensagens entre a última vista e a pedida
             if falta > 3:
                 media = sum(n for _, n in msgs.values()) / len(msgs)
-                p = _achar_inicio(url, int(pos + (falta - 1) * media), media)
-                if p is not None and p > pos:
+                alvo = int(pos + (falta - 1) * media)
+                p = None
+                for _ in range(5):  # o tamanho das mensagens varia (CCSDS): se o salto passou da hora, recua
+                    p = _achar_inicio(url, alvo, media)
+                    if p is None or p <= pos:
+                        p = None
+                        break
+                    c = ler_cabecalho(_faixa(url, p, p + 4095))
+                    msgs[c["validade"].strftime("%Y%m%d%H")] = [p, c["tamanho"]]
+                    if c["validade"] <= ate:
+                        break
+                    passou = int((c["validade"] - ate).total_seconds() // 3600) + 2
+                    alvo, p = int(alvo - passou * media), None
+                    if alvo <= pos:
+                        break
+                if p is not None:
                     pos, saltou = p, True
                 else:
                     ultimo = None  # sem salto: anda de uma em uma daqui em diante
@@ -340,11 +354,20 @@ def preparar(cache: str, rodada: str, passos: list[int], conexoes: int = 16) -> 
             tarefas.add((v, t))
     for k in range(1, max(passos) + 1):
         tarefas.add(("TOT_PREC", r + dt.timedelta(hours=k)))
-    # índices primeiro (um por variável e mês, em paralelo), depois as mensagens
-    meses = {(v, a, m) for v, t in tarefas for a, m in _meses_candidatos(t)}
-    ate = max(t for _, t in tarefas)
-    with cf.ThreadPoolExecutor(min(conexoes, len(meses))) as ex:
-        list(ex.map(lambda x: indice_mes(cache, x[0], x[1], x[2], ate=ate), sorted(meses)))
+    # índices primeiro (um por variável e mês, em paralelo), da hora mais cedo para a mais tarde: um salto até a
+    # primeira e, dali, uma mensagem por hora; depois as mensagens
+    horas_do_mes: dict[tuple, list] = {}
+    for v, t in tarefas:
+        for a, m in _meses_candidatos(t):
+            horas_do_mes.setdefault((v, a, m), []).append(t)
+
+    def indexar(x):
+        (v, a, m), ts = x
+        for t in sorted(ts):
+            indice_mes(cache, v, a, m, ate=t)
+
+    with cf.ThreadPoolExecutor(min(conexoes, len(horas_do_mes))) as ex:
+        list(ex.map(indexar, sorted(horas_do_mes.items())))
     with cf.ThreadPoolExecutor(conexoes) as ex:
         caminhos = list(ex.map(lambda x: baixar_msg(cache, *x), sorted(tarefas)))
     return sum(os.path.getsize(c) for c in caminhos)
