@@ -303,8 +303,18 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
 
     with cf.ThreadPoolExecutor(max(1, len(da_dream))) as ex3:
         mb_dream = sum(ex3.map(baixar_dream, da_dream))
+    def baixar_ou_falta(url: str, destino: str) -> str | None:
+        """gerar.baixar, mas um 404 (GRIB que a cópia não tem) volta como falta em vez de derrubar o pedaço."""
+        try:
+            gerar.baixar(url, destino)
+            return None
+        except RuntimeError as e:
+            if "404" in str(e):
+                return url
+            raise
+
     with cf.ThreadPoolExecutor(a.conexoes) as ex:
-        fut = [ex.submit(gerar.baixar, *x) for x in baixar]
+        fut = [ex.submit(baixar_ou_falta, *x) for x in baixar]
         with cf.ThreadPoolExecutor(max(1, len(da_ocf))) as ex2:
             for r, n in zip(list(da_ocf), ex2.map(baixar_ocf, list(da_ocf))):
                 if n < 0:  # o zip sumiu entre o HEAD e a leitura
@@ -313,9 +323,28 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
                     tarefas = [t for t in tarefas if t[2] != r]
                 else:
                     mb_ocf += n
-        for f in fut:
-            f.result()
-    mb = sum(os.path.getsize(d) for _, d in baixar) / 1e6 + mb_ocf + mb_dream
+        ausentes = [u for u in (f.result() for f in fut) if u]
+    # GRIB ausente: só os passos que dependem dele viram lacuna (o próprio passo e, se for acumulado, o seguinte)
+    horas_sem_quadro = []
+    if ausentes:
+        faltando = {d for u, d in baixar if u in set(ausentes)}
+        novas = []
+        for t in tarefas:
+            r, ps, anterior = t[2], t[3], t[4]
+            ruins = {h for h in ps for v in sorted({v for c in CAMADAS_DA_FONTE[t[6]] for v in gerar.PRECISA[c]})
+                     if gerar.caminho_cache(cache, r, v, h) in faltando
+                     or (v in gerar.ACUMULADAS and anterior[h] is not None and gerar.caminho_cache(cache, r, v, anterior[h]) in faltando)}
+            horas_sem_quadro += [f"{r}+{h}" for h in sorted(ruins)]
+            resto = [h for h in ps if h not in ruins]
+            if resto:
+                passos[r] = resto
+                novas.append(t[:3] + (resto,) + t[4:])
+            else:
+                sem_copia.append(r)
+                del passos[r]
+        tarefas = novas
+        print(f"aviso: {len(ausentes)} GRIB ausentes na cópia (404); passos sem quadro: {horas_sem_quadro}", flush=True)
+    mb = sum(os.path.getsize(d) for _, d in baixar if os.path.exists(d)) / 1e6 + mb_ocf + mb_dream
     t_baixar = time.time() - t1
     print(f"{len(baixar)} GRIB, {sum(len(v) for v in da_ocf.values())} campos da OCF e {len(da_dream)} rodadas da DREAM ({mb:.0f} MB) em {t_baixar:.0f} s, "
           f"{len(passos)} rodadas, sem cópia: {sem_copia or 'nenhuma'}", flush=True)
@@ -337,7 +366,7 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
     elif a.conferir and tarefas:
         conferencia = conferir(tarefas[-1][2], tarefas[-1][3], cache, saida, a.trabalho)
 
-    for r in passos:
+    for r in rodadas:
         shutil.rmtree(os.path.join(cache, r), ignore_errors=True)
     shutil.rmtree(os.path.join(cache, "dream"), ignore_errors=True)
     soma = {k: round(sum(m.get(k, 0) for m in medidas), 1) for k in ("bz2", "grib", "ocf", "dream", "remap", "webp", "total")}
@@ -346,6 +375,8 @@ def gerar_pedaco(a: argparse.Namespace) -> None:
         "rodadas": list(passos),
         "fontes": {r: fontes[r] for r in passos},
         "rodadas_sem_copia": sem_copia,
+        "grib_ausentes": ausentes,
+        "horas_sem_quadro": horas_sem_quadro,
         "ocf_campos_inexatos": sum(m["ocf_inexatos"] for m in medidas),
         "webp": {"method": WEBP_METODO, "quality": WEBP_QUALIDADE},
         "grib": len(baixar),
@@ -554,6 +585,8 @@ def juntar(a: argparse.Namespace) -> None:
         "horas": horas_ok,
         "horas_por_fonte": dict(collections.Counter(fonte_da_hora[k] for k in horas_ok)),
         "rodadas_sem_copia": sorted(r for p in partes for r in p["rodadas_sem_copia"]),
+        "grib_ausentes": sorted(u for p in partes for u in p.get("grib_ausentes", [])),
+        "passos_sem_quadro": sorted(h for p in partes for h in p.get("horas_sem_quadro", [])),
         "ocf_campos_inexatos": sum(p.get("ocf_campos_inexatos", 0) for p in partes),
         "webp": sorted({json.dumps(p.get("webp", {"method": 4, "quality": 100})) for p in partes}),
         "bytes": tamanhos,
