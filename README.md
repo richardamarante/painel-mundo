@@ -18,6 +18,7 @@ cada rodada (00, 06, 12 e 18 UTC), e só trabalha quando há rodada nova. Para r
 | `arquivo.py` | formato PNA1 do arquivo horário no Hugging Face: um `.bin` por camada e mês, índice no começo |
 | `arquivo_lote.py` | gera o arquivo horário em pedaços de 4 rodadas (um job cada) e junta o mês (`.github/workflows/arquivo.yml`) |
 | `ocf.py` | leitor do arquivo zarr da Open Climate Fix (03/2023 a 08/2025): blocos por faixa e o float64 do GRIB reconstruído do float32 |
+| `era5.py` | agua, cape e neve do ERA5 (cópia ARCO-ERA5 do Google) nas horas da DREAM, com origem 4 no índice (`.github/workflows/era5.yml`) |
 | `lotes.py` | lista os lotes do passado, do mais novo para o mais antigo, com a estimativa de tempo, e dispara (`--disparar`) |
 | `test_historico.py` | testes do histórico e do fluxo do `enviar.py` com um R2 de mentira: `python -m unittest test_historico` |
 
@@ -82,6 +83,23 @@ existem (fração de neve 0). TQV, CAPE_ML e H_SNOW não existem em passo nenhum
 `cape` e `neve` ficam sem quadro (tamanho 0 no índice) e o resto da hora entra com origem 3. Com `--conferir`, o
 primeiro pedaço de um mês da DREAM gera também a rodada 2026091500 da DREAM e compara os valores decodificados com os
 quadros operacionais do mesmo horário já no HF (viés, RMSE, correlação, PNG lado a lado no artefato).
+
+### agua, cape e neve do ERA5 nas horas da DREAM
+
+`era5.py` (workflow **ERA5 nas horas da DREAM**) preenche essas três camadas com a reanálise ERA5 do ECMWF (CC BY 4.0,
+doi:10.24381/cds.adbb2d47), lida da cópia pública ARCO-ERA5 do Google Cloud por HTTPS anônimo (zarr, um pedaço por
+hora e variável, 0,25°): `total_column_water_vapour` para agua, `convective_available_potential_energy` para cape e
+`snow_depth` (m de água) x 1000 / `snow_density` (kg/m³) para neve, a altura em metros como o H_SNOW. A conversão é a
+0,25°, a interpolação para 0,125° é bilinear com a longitude periódica, e o quadro sai do mesmo `gerar.quadro_escalar`
+(mesma escala, unidade, bits e raiz) com o WebP do arquivo. O índice marca esses quadros com origem 4. Só as horas de
+origem 3 da t2m em que a camada está vazia são geradas; os quadros que já existem (o ICON nos meses mistos) passam byte a
+byte, e só os três `.bin` e `meses/<AAAA-MM>-era5.json` sobem. O juntar do `arquivo_lote.py` mantém os quadros de origem
+4 que o HF já tem (`manter_era5`), então refazer o lote de um mês não apaga o ERA5.
+
+Diferenças esperadas contra o ICON (conferência em 2024-08, `python era5.py conferir --mes 2024-08`): TQV quase igual
+(correlação 0,99); o CAPE do ERA5 é o da parcela mais instável e o do ICON o da camada de mistura (correlação ~0,83,
+ERA5 menor sobre o oceano tropical); a neve bate fora das geleiras, e nas geleiras e ilhas do Ártico o ERA5 fixa 10 m de
+água, que satura a escala de 4 m.
 
 GRIB ausente na cópia (404) não derruba o pedaço: o passo que depende dele (e o seguinte, se o arquivo for de um
 acumulado) fica sem quadro, e o mês registra `grib_ausentes` e `passos_sem_quadro` no `meses/<AAAA-MM>.json`.
