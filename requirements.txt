@@ -4,3 +4,5 @@ pillow==13.0.0
 eccodes==2.50.0
 eccodeslib==2.50.0.33
 boto3==1.43.114
+blosc2==4.14.1
+numcodecs==0.17.0
