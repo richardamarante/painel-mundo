@@ -17,6 +17,7 @@ cada rodada (00, 06, 12 e 18 UTC), e só trabalha quando há rodada nova. Para r
 | `historico.py` | o passado do modo: horas 1 a 6 de cada rodada que saiu de cena, quadro diário (média, 0,5°) e o trecho de cada um no manifesto |
 | `arquivo.py` | formato PNA1 do arquivo horário no Hugging Face: um `.bin` por camada e mês, índice no começo |
 | `arquivo_lote.py` | gera o arquivo horário em pedaços de 4 rodadas (um job cada) e junta o mês (`.github/workflows/arquivo.yml`) |
+| `ocf.py` | leitor do arquivo zarr da Open Climate Fix (03/2023 a 08/2025): blocos por faixa e o float64 do GRIB reconstruído do float32 |
 | `lotes.py` | lista os lotes do passado, do mais novo para o mais antigo, com a estimativa de tempo, e dispara (`--disparar`) |
 | `test_historico.py` | testes do histórico e do fluxo do `enviar.py` com um R2 de mentira: `python -m unittest test_historico` |
 
@@ -62,6 +63,14 @@ O passado de 0,125° hora a hora vai para o dataset público `richardmelo/painel
 `<camada>/<AAAA>/<AAAA-MM>.bin` (formato em `arquivo.py`) e `meses/<AAAA-MM>.json`. O workflow **Arquivo horário**
 corta cada mês em pedaços de 4 rodadas (um dia), um job por pedaço, até 20 ao mesmo tempo e 256 por disparo (8 meses).
 Cada job baixa os GRIB das suas rodadas de uma vez e faz uma rodada por núcleo; os quadros sobem como artefato, e um
-job por mês junta tudo e envia. O quadro é o do `gerar.py`, byte a byte (`--conferir` compara uma rodada por mês).
+job por mês junta tudo e envia. O quadro tem os mesmos pixels do `gerar.py` (`--conferir` gera uma rodada por mês pelo `gerar.py` e compara os
+códigos decodificados); o WebP sem perda do arquivo sai com `method=0, quality=0`, 10 vezes mais rápido que o
+`method=4` do `gerar.py` e uns 65% maior.
+
+Fontes por período: cópias do opendata no source.coop (`bkr/icon/icon-global-raw`) de 12/03/2026 em diante; arquivo
+zarr da Open Climate Fix (`bkr/icon/icon`, `ocf.py`) de 21/03/2023 a 15/08/2025, com os buracos de 28-29/05/2023,
+16/03 a 04/06/2024 e 27/01 a 03/04/2025. O float32 da OCF volta exatamente ao float64 que o eccodes dá ao GRIB (o GRIB
+guarda inteiros de 16 bits num passo 2^E, mais grosso que o arredondamento do float32), então os quadros são os mesmos.
+De 09/2025 a 02/2026 não há cópia completa (a hylosense só tem a rodada das 00 UTC e 9 das 14 variáveis): lacuna.
 
 Segredos do repositório: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `HF_TOKEN`.
